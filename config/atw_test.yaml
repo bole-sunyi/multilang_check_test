@@ -1,0 +1,162 @@
+# ==========================================================
+# atw_test 模块业务流配置文件
+# ----------------------------------------------------------
+# 这份文件目前是按项目现有有效流程完整复制出来的模板版本。
+# 如果后面你采到了 atw 模块自己的真实坐标，只需要改 steps 里的坐标即可。
+# ==========================================================
+
+# 1. 基础配置区
+package_name_env: "APP_PACKAGE_NAME"
+startup_wait_seconds: 3               # 启动游戏后额外等待 3 秒，避免资源还没加载完就开始点击
+stop_app_after_run: false             # 跑完后先不关 App，方便你肉眼确认页面状态
+dump_poco_tree: true                  # 每次执行都导出 Poco 控件树，方便排查“为什么点不到”
+excel_sheet_name: "atw"               # 本模块截图写入 Excel 的 atw sheet
+
+# Poco selector 配置模板：
+# - action: "click"
+#   selector:
+#     text: "按钮文字"                  # 或 resourceId / resource_id / desc / name / type
+#     index: 0                         # 多个节点同时命中时可指定第几个
+#   relative_pos: [0.5, 0.5]           # 可选：点击控件内部的相对位置
+#   fallback_pos: [0.5, 0.5]           # 仅当 Poco 节点树完全识别不到时临时兜底
+
+# 2. 业务步骤区
+steps:
+  # 目的：
+  # 1. 刚启动 App 后，主界面通常还有动画、资源加载、弹窗刷新；
+  # 2. 这里先统一多等 3 秒，尽量把起跑线拉到稳定状态；
+  # 3. 如果后面第一步就点偏，通常优先怀疑这里等得不够久。
+  - name: "【准备】等待主界面完全加载"
+    action: "sleep"
+    seconds: 3                        # 额外多等 3 秒，确保主界面动画和资源都稳定下来
+
+  # 目的：
+  # 1. 先点到 atw 流程的第一个入口；
+  # 2. 这一步相当于“从当前主界面切进 atw 所在的大入口区域”；
+  # 3. 点完后，预期应该看到 atw 后续业务链路所在的新界面，而不是仍停留在原主界面。
+  - name: "【操作】a级入口"
+    action: "click"
+    fallback_pos: [0.3799, 0.9115]
+    sleep_after: 1                    # 第 1 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】atw入口"
+    action: "click"
+    fallback_pos: [0.4971, 0.776]
+    sleep_after: 1                    # 第 2 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+
+  #test 坐标
+  - name: "【操作】shop_1点击"
+    action: "click"
+    fallback_pos: [0.2227, 0.5469]
+    sleep_after: 1  # 第 1 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop1_1点击"
+    action: "click"
+    fallback_pos: [0.4912, 0.4453]
+    sleep_after: 1  # 第 2 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop1_2点击"
+    action: "click"
+    fallback_pos: [0.8223, 0.4987]
+    sleep_after: 1  # 第 3 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shopp1_3点击"
+    action: "click"
+    fallback_pos: [0.7627, 0.2331]
+    sleep_after: 1  # 第 4 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】关闭shop1"
+    action: "click"
+    fallback_pos: [0.9668, 0.043]
+    sleep_after: 1  # 第 5 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop_2点击"
+    action: "click"
+    fallback_pos: [0.5322, 0.5339]
+    sleep_after: 1  # 第 6 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop2_1点击"
+    action: "click"
+    fallback_pos: [0.5098, 0.4674]
+    sleep_after: 1  # 第 7 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop2_2点击"
+    action: "click"
+    fallback_pos: [0.8203, 0.5013]
+    sleep_after: 1  # 第 8 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop2_3点击"
+    action: "click"
+    fallback_pos: [0.7705, 0.2266]
+    sleep_after: 1  # 第 9 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop2_4点击"
+    action: "click"
+    fallback_pos: [0.9707, 0.0391]
+    sleep_after: 1  # 第 10 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】关闭shop2"
+    action: "click"
+    fallback_pos: [0.8652, 0.5143]
+    sleep_after: 1  # 第 11 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop3点击"
+    action: "click"
+    fallback_pos: [0.4893, 0.4427]
+    sleep_after: 1  # 第 12 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop3_1点击"
+    action: "click"
+    fallback_pos: [0.8154, 0.5013]
+    sleep_after: 1  # 第 13 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop3_2点击"
+    action: "click"
+    fallback_pos: [0.8145, 0.4987]
+    sleep_after: 1  # 第 14 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop3_3点击"
+    action: "click"
+    fallback_pos: [0.7627, 0.224]
+    sleep_after: 1  # 第 15 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】shop3_4点击"
+    action: "click"
+    fallback_pos: [0.9678, 0.0417]
+    sleep_after: 1  # 第 16 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  - name: "【操作】关闭shop_3"
+    action: "click"
+    fallback_pos: [0.995, 0.3398]
+    sleep_after: 1  # 第 17 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+
+
+
+  - name: "【操作】关闭atw"
+    action: "click"
+    fallback_pos: [0.9707, 0.0326]
+    sleep_after: 1                    # 第 3 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
+
+  

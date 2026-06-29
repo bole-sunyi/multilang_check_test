@@ -1,0 +1,33 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "stubPath": "typings",
+  "exclude": [
+    ".venv",
+    "**/__pycache__"
+  ],
+  "include": [
+    "src",
+    "cases",
+    "dump_current_screen.py",
+    "poco_hover_inspector.py",
+    "quick_click.py"
+  ],
+  "extraPaths": [
+    "src"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "src"
+      ]
+    },
+    {
+      "root": "cases",
+      "extraPaths": [
+        "src"
+      ]
+    }
+  ]
+}

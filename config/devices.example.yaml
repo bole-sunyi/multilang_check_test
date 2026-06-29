@@ -1,0 +1,17 @@
+adb_host: "127.0.0.1"
+adb_port: 5037
+parallel_workers: 4
+cases_dir: "cases"
+output_dir: "/Users/sunyi/Downloads/artifacts"
+baseline_dir: "baselines"
+diff_threshold: 0.01
+
+devices:
+  - name: "emulator-5554"
+    serial: "emulator-5554"
+    platform: "android"
+    enabled: true
+  - name: "R3CN30XXXX"
+    serial: "R3CN30XXXX"
+    platform: "android"
+    enabled: false

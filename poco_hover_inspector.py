@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+# ---------------------------------------------------------------
+# 【脚本用途】
+# 这是“鼠标悬停看坐标”工具。
+#
+# 它的核心作用不是自动点击，而是帮你做两件事：
+# 1. 在截图上肉眼找按钮时，实时看到当前位置的 0-1 坐标；
+# 2. 如果 Poco 能识别该位置的节点，还会顺手告诉你节点名称和文本。
+# ---------------------------------------------------------------
+import cv2
+import os
+import sys
+from pathlib import Path
+
+# 确保能搜到我们的工具包
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from airtest.core.api import auto_setup, snapshot, connect_device
+from airtest_ai_runner.device_utils import build_android_device_uri
+from airtest_ai_runner.poco_utils import build_android_poco
+from airtest_ai_runner.paths import get_hover_inspector_dir
+
+
+ADB_HOST = "127.0.0.1"
+ADB_PORT = 5037
+DEVICE_SERIAL = os.environ.get("DEVICE_SERIAL", "127.0.0.1:16448").strip()
+DEVICE_URI = build_android_device_uri(ADB_HOST, ADB_PORT, DEVICE_SERIAL)
+
+# 全局变量，用于存储采集到的数据
+# poco_nodes: 当前页面所有已摊平的节点
+# screen_img: 原始截图
+# display_img: 预留给后续扩展的显示图缓存
+poco_nodes = []
+screen_img = None
+display_img = None
+
+
+def get_node_at(x_norm, y_norm):
+    """
+    根据归一化坐标 (0-1) 找到层级最深的节点（通常是我们要找的按钮）。
+    原理很简单：
+    1. 遍历所有节点；
+    2. 找出“当前鼠标位置落在它范围里”的节点；
+    3. 如果多个节点都命中，就优先返回面积最小、也就是最精确的那个。
+    """
+    best_node = None
+    min_size = float('inf')
+
+    for node in poco_nodes:
+        pos = node.get("pos")
+        size = node.get("size")
+        if not pos or not size:
+            continue
+
+        # 计算边界
+        x_min = pos[0] - size[0] / 2
+        x_max = pos[0] + size[0] / 2
+        y_min = pos[1] - size[1] / 2
+        y_max = pos[1] + size[1] / 2
+
+        # 检查坐标是否在范围内
+        if x_min <= x_norm <= x_max and y_min <= y_norm <= y_max:
+            # 选面积最小的（即最精准的叶子节点）
+            area = size[0] * size[1]
+            if area < min_size:
+                min_size = area
+                best_node = node
+
+    return best_node
+
+def on_mouse_move(event, x, y, _flags, _param):
+    """
+    鼠标移动回调函数。
+    只要鼠标在图片窗口里移动一次，这个函数就会自动触发一次。
+    """
+    global display_img
+    _ = (_flags, _param)
+    if event == cv2.EVENT_MOUSEMOVE:
+        if screen_img is None:
+            return
+        h, w = screen_img.shape[:2]
+        # 计算归一化坐标 (Poco 使用的 0-1 坐标)
+        x_norm = x / w
+        y_norm = y / h
+
+        # 查找该位置的节点
+        node = get_node_at(x_norm, y_norm)
+
+        # 刷新显示图
+        # 每次鼠标一移动，都从原图重新复制一份，避免十字线和框越画越多。
+        temp_img = screen_img.copy()
+
+        # 绘制十字线
+        cv2.line(temp_img, (0, y), (w, y), (0, 255, 0), 1)
+        cv2.line(temp_img, (x, 0), (x, h), (0, 255, 0), 1)
+
+        if node:
+            # 提取节点信息
+            name = node.get("name", "Unknown")
+            text = node.get("text", "")
+            # 打印到控制台，方便直接复制
+            info = f"Pos: [{x_norm:.3f}, {y_norm:.3f}] | Name: {name} | Text: {text}"
+
+            # 在窗口左上角显示信息
+            cv2.putText(temp_img, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            # 绘制节点边框
+            pos = node["pos"]
+            size = node["size"]
+            nx, ny = int((pos[0] - size[0]/2) * w), int((pos[1] - size[1]/2) * h)
+            nw, nh = int(size[0] * w), int(size[1] * h)
+            cv2.rectangle(temp_img, (nx, ny), (nx + nw, ny + nh), (0, 0, 255), 2)
+
+            # 实时输出到终端 (使用 \r 实现原地刷新)
+            sys.stdout.write(f"\r[检测到节点] 建议坐标: [{x_norm:.3f}, {y_norm:.3f}] | 文本: {text} | 名称: {name}    ")
+            sys.stdout.flush()
+        else:
+            sys.stdout.write(f"\r[空白区域] 当前坐标: [{x_norm:.3f}, {y_norm:.3f}]                                ")
+            sys.stdout.flush()
+
+        cv2.imshow("Poco Hover Inspector (Press ESC to Quit)", temp_img)
+
+
+def start_inspector():
+    global poco_nodes, screen_img
+
+    print("="*60)
+    print("【Poco 鼠标悬停查询工具】")
+    print("用法: 鼠标在弹出的窗口上移动，即可在窗口顶部和控制台看到坐标。")
+    print("="*60)
+
+    # 1. 连接设备
+    # 这里先连接模拟器，再初始化 Airtest，确保后续截图和 Poco 读取都能正常工作。
+    print("正在连接设备并截取当前画面...")
+    connect_device(DEVICE_URI)
+    auto_setup(__file__, devices=[DEVICE_URI])
+
+    # 2. 采集数据
+    # 这里直接读取 Poco 的原始层级树，再手工摊平成一维列表。
+    # 这样鼠标每移动一次时，只需要在列表里查，不需要反复递归整棵树。
+    poco = build_android_poco()
+    # 递归采集所有节点
+    raw_dump = poco.agent.hierarchy.dump()
+
+    def flatten(node):
+        """
+        把树状节点摊平成一维列表。
+        这样后面鼠标移动时，就不用每次都递归整棵树，查找会更直接。
+        """
+        res = []
+        payload = node.get("payload", {})
+        if payload:
+            res.append(payload)
+        for child in node.get("children", []):
+            res.extend(flatten(child))
+        return res
+
+    poco_nodes = flatten(raw_dump)
+
+    # 3. 获取截图
+    # 这里先临时生成一张截图，给 OpenCV 当作可视化底图使用。
+    output_dir = get_hover_inspector_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    screen_file = output_dir / "temp_inspector_screen.png"
+    snapshot(filename=str(screen_file))
+    screen_img = cv2.imread(str(screen_file))
+    if screen_img is None:
+        print("错误: 无法获取截图，请检查模拟器连接。")
+        return
+
+    # 4. 创建交互窗口
+    cv2.namedWindow("Poco Hover Inspector (Press ESC to Quit)", cv2.WINDOW_NORMAL)
+    # 窗口大小调整为截图的一半，防止太大
+    h, w = screen_img.shape[:2]
+    cv2.resizeWindow("Poco Hover Inspector (Press ESC to Quit)", w // 2, h // 2)
+
+    cv2.setMouseCallback("Poco Hover Inspector (Press ESC to Quit)", on_mouse_move)
+
+    print("\n工具已启动！请在弹出的图片窗口上移动鼠标。")
+    print("找到满意的按钮后，直接复制控制台输出的 [x, y] 坐标到 yaml 即可。")
+
+    cv2.imshow("Poco Hover Inspector (Press ESC to Quit)", screen_img)
+
+    while True:
+        # 按 ESC 键退出
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+    # 收尾：关闭窗口，删除临时截图文件，避免项目目录残留垃圾文件。
+    cv2.destroyAllWindows()
+    if screen_file.exists():
+        screen_file.unlink()
+    print("\n工具已关闭。")
+
+if __name__ == "__main__":
+    start_inspector()

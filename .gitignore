@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+artifacts/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+.DS_Store
+temp_inspector_screen.png
