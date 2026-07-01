@@ -26,7 +26,7 @@ def write_single_case_reports(
     started_at: str,
     finished_at: str,
     error_text: str = "",
-    excel_path: Path | None = None,
+    excel_path: Path | str | None = None,
     snapshot_records: list[dict[str, Any]] | None = None,
 ) -> tuple[Path, Path, Path]:
     """
@@ -72,7 +72,7 @@ def write_single_case_reports(
         "log_dir": str(log_dir),
         "attempt_dir": str(log_dir),
         "image_diffs": [],
-        "excel_path": str(excel_path.resolve()) if excel_path else "",
+        "excel_path": _excel_output_to_text(excel_path),
         "snapshot_records": snapshot_records or [],
         "baseline_action": "skipped",
         "baseline_files": [],
@@ -102,3 +102,11 @@ def write_single_case_reports(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
     return generate_reports([result], log_dir, runtime_options=runtime_options)
+
+
+def _excel_output_to_text(excel_path: Path | str | None) -> str:
+    if excel_path is None:
+        return ""
+    if isinstance(excel_path, Path):
+        return str(excel_path.resolve())
+    return excel_path

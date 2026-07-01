@@ -384,7 +384,7 @@ def render_markdown(summary: ReportSummary) -> str:
         snapshot_lines.append(
             f"- 设备 `{_str_value(item.get('device_name'))}` / 用例 `{_str_value(item.get('case_name'))}` / "
             + f"截图 `{len(records)}` 张 / fallback_pos `{len(fallback_records)}` 次"
-            + (f" / Excel `{excel_path}`" if excel_path else "")
+            + (f" / 表格 `{excel_path}`" if excel_path else "")
         )
         for record in fallback_records:
             snapshot_lines.append(
@@ -510,7 +510,7 @@ def render_html(summary: ReportSummary) -> str:
                 "<div class='case-card'>"
                 + f"<h3>{escape(_str_value(item.get('device_name')))} / {escape(_str_value(item.get('case_name')))}</h3>"
                 + f"<p>状态：<strong>{escape(_str_value(item.get('status')))}</strong>，重试次数：{escape(item.get('attempt_count', 1))}</p>"
-                + f"<p>截图：{escape(len(snapshot_records))} 张，fallback_pos：<strong>{escape(fallback_count)}</strong> 次，Excel：{path_to_link(_str_value(item.get('excel_path')))}</p>"
+                + f"<p>截图：{escape(len(snapshot_records))} 张，fallback_pos：<strong>{escape(fallback_count)}</strong> 次，表格：{path_to_link(_str_value(item.get('excel_path')))}</p>"
                 + f"<p>基线动作：{escape(item.get('baseline_action', 'skipped'))}</p>"
                 + f"<p>日志目录：{path_to_link(item.get('log_dir', ''))}</p>"
                 + "<h4>尝试明细</h4>"
@@ -618,5 +618,7 @@ def path_to_link(path: str) -> str:
     """把本地文件路径渲染成 HTML 可点击链接。"""
     if not path:
         return ""
+    if path.startswith(("http://", "https://")):
+        return f"<a href='{html.escape(path)}'>{html.escape(path)}</a>"
     path_obj = Path(path)
     return f"<a href='file://{html.escape(str(path_obj.resolve()))}'>{html.escape(path_obj.name)}</a>"

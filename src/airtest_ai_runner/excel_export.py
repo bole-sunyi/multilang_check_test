@@ -14,12 +14,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
     from openpyxl.worksheet.worksheet import Worksheet
 
 from .screenshot_utils import build_resized_png_buffer
+from .paths import get_run_artifacts_dir
 
 
 class ClickSnapshotRecord(TypedDict, total=False):
@@ -39,17 +41,19 @@ class _AnchorMarkerLike(Protocol):
 
 # 这些常量统一管理模板位置、工作表名和图片尺寸。
 # 以后如果模板地址或缩略图大小要调整，优先改这里即可。
-DEFAULT_EXCEL_TEMPLATE_PATH = Path("/Users/sunyi/Downloads/多语测试模板.xlsx")
+LEGACY_EXCEL_TEMPLATE_PATH = Path("/Users/sunyi/Downloads/多语测试模板.xlsx")
 EXCEL_TEMPLATE_PATH_ENV_NAMES = ("MULTILANG_EXCEL_TEMPLATE_PATH", "EXCEL_TEMPLATE_PATH")
+LOCAL_EXCEL_OUTPUT_NAME = "多语测试模板.xlsx"
 DEFAULT_SHEET_NAME = "Sheet1"
 DEFAULT_START_ROW = 3
 NAME_COLUMN = "A"
 IMAGE_COLUMN = "B"
 LOCATOR_COLUMN = "C"
-MAX_IMAGE_WIDTH_PX = 640
-MAX_IMAGE_HEIGHT_PX = 360
+MAX_IMAGE_WIDTH_PX = 520
+MAX_IMAGE_HEIGHT_PX = 390
+IMAGE_CELL_PADDING_PX = 8
 MIN_NAME_COLUMN_WIDTH = 24
-MIN_IMAGE_COLUMN_WIDTH = 55
+MIN_IMAGE_COLUMN_WIDTH = 75
 MIN_LOCATOR_COLUMN_WIDTH = 18
 
 
@@ -60,7 +64,7 @@ def resolve_excel_template_path(workbook_path: Path | None = None) -> Path:
     优先级：
     1. 调用方显式传入的 workbook_path；
     2. 环境变量 MULTILANG_EXCEL_TEMPLATE_PATH / EXCEL_TEMPLATE_PATH；
-    3. 项目默认的下载目录模板。
+    3. 新产物目录下固定的 `多语测试模板.xlsx`。
     """
     if workbook_path is not None:
         return workbook_path.expanduser().resolve()
@@ -70,7 +74,16 @@ def resolve_excel_template_path(workbook_path: Path | None = None) -> Path:
         if env_path:
             return Path(env_path).expanduser().resolve()
 
-    return DEFAULT_EXCEL_TEMPLATE_PATH.expanduser().resolve()
+    return _resolve_default_workbook_path()
+
+
+def _resolve_default_workbook_path() -> Path:
+    """默认把 Excel 输出到产物目录固定模板文件。"""
+    output_path = get_run_artifacts_dir() / LOCAL_EXCEL_OUTPUT_NAME
+    if not output_path.exists() and LEGACY_EXCEL_TEMPLATE_PATH.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(LEGACY_EXCEL_TEMPLATE_PATH, output_path)
+    return output_path.resolve()
 
 
 def export_click_screenshots_to_excel(
@@ -210,10 +223,11 @@ def _insert_image(worksheet: "Worksheet", cell: str, image_path: Path) -> tuple[
     """
     from openpyxl.drawing.image import Image as OpenpyxlImage
 
+    max_width_px, max_height_px = _get_image_cell_limits(worksheet, cell)
     buffer, width, height = build_resized_png_buffer(
         image_path,
-        max_width_px=MAX_IMAGE_WIDTH_PX,
-        max_height_px=MAX_IMAGE_HEIGHT_PX,
+        max_width_px=max_width_px,
+        max_height_px=max_height_px,
         prefer_landscape=True,
     )
     excel_image = OpenpyxlImage(buffer)
@@ -222,7 +236,15 @@ def _insert_image(worksheet: "Worksheet", cell: str, image_path: Path) -> tuple[
     worksheet.add_image(excel_image, cell)
 
     # openpyxl 行高单位是 point，近似按 0.75 换算像素。
-    return width, max(height * 0.75, 20)
+    return width + IMAGE_CELL_PADDING_PX, max((height + IMAGE_CELL_PADDING_PX) * 0.75, 20)
+
+
+def _get_image_cell_limits(worksheet: "Worksheet", cell: str) -> tuple[int, int]:
+    """返回本工具期望的截图单元格尺寸，不继承旧表格里可能过小的列宽/行高。"""
+    _ = (worksheet, cell)
+    max_width_px = max(MAX_IMAGE_WIDTH_PX - IMAGE_CELL_PADDING_PX, 1)
+    max_height_px = max(MAX_IMAGE_HEIGHT_PX - IMAGE_CELL_PADDING_PX, 1)
+    return max_width_px, max_height_px
 
 
 def _get_worksheet_images(worksheet: "Worksheet") -> list[object]:

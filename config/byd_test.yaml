@@ -10,7 +10,7 @@ package_name_env: "APP_PACKAGE_NAME"
 startup_wait_seconds: 20              # 启动游戏后额外等待 20 秒，避免资源还没加载完就开始点击
 stop_app_after_run: false             # 跑完后先不关 App，方便你肉眼确认页面状态
 dump_poco_tree: true                  # 每次执行都导出 Poco 控件树，方便排查“为什么点不到”
-excel_sheet_name: "byd"               # 本模块截图写入 Excel 的 byd sheet
+excel_sheet_name: "byd"               # 本模块截图写入本地表格的 byd sheet
 
 # Poco selector 配置模板：
 # - action: "click"

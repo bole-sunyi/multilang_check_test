@@ -18,6 +18,9 @@ import sys
 from collections.abc import Sequence
 
 
+DEFAULT_LOCAL_ADB_PORTS = (16448, 7555, 5555, 5554, 62001, 21503)
+
+
 def build_android_device_uri(adb_host: str, adb_port: int, device_serial: str) -> str:
     """
     统一生成 Android 设备连接串。
@@ -31,6 +34,112 @@ def build_android_device_uri(adb_host: str, adb_port: int, device_serial: str) -
         f"Android://{adb_host}:{adb_port}/{device_serial}"
         "?cap_method=MINICAP&&ori_method=MINICAPORI&&touch_method=ADBTOUCH"
     )
+
+
+def select_android_device_serial(
+    adb_host: str = "127.0.0.1",
+    preferred_serial: str | None = None,
+) -> str:
+    """
+    自动发现当前 adb 可用设备，并在多设备时让用户选择。
+
+    发现流程：
+    1. 先读取已经在线的 `adb devices`；
+    2. 再尝试连接常见本地模拟器端口；
+    3. 如果只有一台设备，自动选中；如果多台设备，交互选择。
+    """
+    serials = discover_android_device_serials(adb_host=adb_host)
+    preferred = (preferred_serial or os.environ.get("DEVICE_SERIAL", "")).strip()
+    if preferred and preferred in serials:
+        print(f">>> 已使用指定设备: {preferred}")
+        return preferred
+
+    if not serials:
+        raise RuntimeError("未发现可用设备，请确认模拟器/手机已启动，且 adb devices 能识别。")
+
+    if len(serials) == 1:
+        print(f">>> 已自动选择设备: {serials[0]}")
+        return serials[0]
+
+    print(">>> 发现多台可用设备，请选择本次连接目标：")
+    for index, serial in enumerate(serials, start=1):
+        print(f"    {index}. {serial}")
+
+    while True:
+        try:
+            raw_choice = input("请输入序号（直接回车选择 1）: ").strip()
+        except EOFError:
+            raw_choice = ""
+        if not raw_choice:
+            print(f">>> 已选择设备: {serials[0]}")
+            return serials[0]
+        if raw_choice.isdigit():
+            choice = int(raw_choice)
+            if 1 <= choice <= len(serials):
+                print(f">>> 已选择设备: {serials[choice - 1]}")
+                return serials[choice - 1]
+        print("输入无效，请重新输入设备序号。")
+
+
+def discover_android_device_serials(adb_host: str = "127.0.0.1") -> list[str]:
+    """
+    返回当前可连接的 Android 设备 serial 列表。
+
+    `adb devices` 只能看到已经连接的 TCP 模拟器。为减少手工指定端口，
+    这里会额外尝试连接一组常见本地模拟器端口，再重新读取在线设备。
+    可用环境变量 `ADB_DISCOVERY_PORTS=16448,7555` 覆盖候选端口。
+    """
+    serials = list_connected_adb_devices()
+    _ = connect_local_adb_candidates(adb_host=adb_host)
+    for serial in list_connected_adb_devices():
+        if serial not in serials:
+            serials.append(serial)
+    return serials
+
+
+def list_connected_adb_devices() -> list[str]:
+    """读取当前 `adb devices` 中状态为 device 的设备。"""
+    completed = subprocess.run(["adb", "devices"], capture_output=True, text=True, check=False)
+    serials: list[str] = []
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            serials.append(parts[0])
+    return serials
+
+
+def connect_local_adb_candidates(adb_host: str = "127.0.0.1") -> list[str]:
+    """尝试连接常见本地模拟器 adb 端口，并返回本轮尝试成功的 serial。"""
+    connected: list[str] = []
+    for port in _get_adb_candidate_ports():
+        serial = f"{adb_host}:{port}"
+        try:
+            completed = subprocess.run(
+                ["adb", "connect", serial],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        output = f"{completed.stdout}\n{completed.stderr}".lower()
+        if "connected" in output or "already connected" in output:
+            connected.append(serial)
+    return connected
+
+
+def _get_adb_candidate_ports() -> tuple[int, ...]:
+    raw_ports = os.environ.get("ADB_DISCOVERY_PORTS", "").strip()
+    if not raw_ports:
+        return DEFAULT_LOCAL_ADB_PORTS
+
+    ports: list[int] = []
+    for raw_port in raw_ports.split(","):
+        raw_port = raw_port.strip()
+        if raw_port.isdigit():
+            ports.append(int(raw_port))
+    return tuple(ports) or DEFAULT_LOCAL_ADB_PORTS
 
 
 def resolve_airtest_devices(

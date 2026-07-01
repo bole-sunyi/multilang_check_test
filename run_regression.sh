@@ -46,7 +46,7 @@ fi
 # PYTHONPATH 让 Python 能找到我们自己写的 src/airtest_ai_runner 包。
 export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
 # ARTIFACTS_ROOT 决定所有截图、日志、报告默认写到哪里。
-export ARTIFACTS_ROOT="${ARTIFACTS_ROOT:-/Users/sunyi/Downloads/artifacts}"
+export ARTIFACTS_ROOT="${ARTIFACTS_ROOT:-/Users/sunyi/Downloads/multilang_check_artifacts}"
 
 # 默认执行包名。
 # 如果你要临时改成别的游戏包名，可以在命令前面这样写：

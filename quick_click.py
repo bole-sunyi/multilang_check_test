@@ -6,7 +6,7 @@
 # 你可以把它理解成：
 # 1. 监听你在模拟器/手机上的真实点击；
 # 2. 把底层触摸坐标换算成 YAML 能直接使用的 0-1 百分比坐标；
-# 3. 自动生成 fallback_pos 列表和可直接粘贴的 steps 片段。
+# 3. 只在项目 coordinate_captures 下保存可直接粘贴的 YAML。
 # ---------------------------------------------------------------
 import os
 import pty
@@ -14,6 +14,7 @@ import re
 import select
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 项目根目录就是当前脚本所在目录。
@@ -23,17 +24,17 @@ sys_path = PROJECT_ROOT / "src"
 if str(sys_path) not in sys.path:
     sys.path.insert(0, str(sys_path))
 
-from airtest_ai_runner.device_utils import get_touch_display_info, raw_touch_to_upright_normalized
-from airtest_ai_runner.paths import get_quick_click_dir
+from airtest_ai_runner.device_utils import (
+    build_adb_command,
+    get_touch_display_info,
+    raw_touch_to_upright_normalized,
+    select_android_device_serial,
+)
+from airtest_ai_runner.paths import get_coordinate_capture_dir
 
 
-# 下面这些路径都是本工具专用的输出文件。
-# 统一写到下载目录的 artifacts/quick_click 下面，避免把项目目录塞满。
-OUTPUT_DIR = get_quick_click_dir()
-OUTPUT_FILE = OUTPUT_DIR / "points.txt"
-FALLBACK_FILE = OUTPUT_DIR / "fallback_pos_list.txt"
-YAML_FILE = OUTPUT_DIR / "module_steps_snippet.yaml"
-DEBUG_FILE = OUTPUT_DIR / "quick_click_debug.log"
+LATEST_YAML_FILE = "latest_quick_click.yaml"
+HISTORY_YAML_FILE = "quick_click_history.yaml"
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -41,7 +42,7 @@ def copy_to_clipboard(text: str) -> None:
     _ = subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
 
 
-def start_getevent_process(device_path: str) -> tuple[subprocess.Popen[bytes], int]:
+def start_getevent_process(device_path: str, serial: str) -> tuple[subprocess.Popen[bytes], int]:
     """
     用伪终端方式启动 getevent。
     这样 `adb shell getevent` 会把输出当成 TTY，能更稳定地实时刷出事件，
@@ -49,7 +50,7 @@ def start_getevent_process(device_path: str) -> tuple[subprocess.Popen[bytes], i
     """
     master_fd, slave_fd = pty.openpty()
     process = subprocess.Popen(
-        ["adb", "shell", "getevent", "-lt", device_path],
+        build_adb_command(serial) + ["shell", "getevent", "-lt", device_path],
         stdin=subprocess.DEVNULL,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -76,13 +77,13 @@ def iter_getevent_lines(process: subprocess.Popen[bytes], master_fd: int):
             yield line.strip()
 
 
-def detect_touch_device() -> tuple[str, int, int]:
+def detect_touch_device(serial: str) -> tuple[str, int, int]:
     """
     自动找到触摸输入设备，并读取它的 X/Y 最大值。
     这样计算出的归一化坐标会比写死分辨率更准确。
     """
     output = subprocess.check_output(
-        ["adb", "shell", "getevent", "-p"],
+        build_adb_command(serial) + ["shell", "getevent", "-p"],
         stderr=subprocess.STDOUT,
     ).decode("utf-8", errors="ignore")
     current_device = ""
@@ -120,12 +121,6 @@ def detect_touch_device() -> tuple[str, int, int]:
         return current_device, int(current_max_x), int(current_max_y)
 
     raise RuntimeError("没有找到可用的触摸输入设备，无法开始坐标拾取。")
-
-
-def save_points(points: list[str]) -> None:
-    """保存全部已采集坐标，方便后续批量复制或回看。"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _ = OUTPUT_FILE.write_text("\n".join(points) + ("\n" if points else ""), encoding="utf-8")
 
 
 def ask_step_remark(index: int) -> str:
@@ -170,16 +165,6 @@ def collect_step_remarks(collected_points: list[str]) -> list[dict[str, str]]:
     return points_with_notes
 
 
-def build_fallback_lines(points_with_notes: list[dict[str, str]]) -> str:
-    """生成可直接复用的 fallback_pos 列表。"""
-    lines: list[str] = []
-    for index, item in enumerate(points_with_notes, start=1):
-        # 这里先写一行备注，再写坐标，方便你后面人工对照每一步含义。
-        lines.append(f"# {index:02d}. {item['remark']}")
-        lines.append(f"fallback_pos: {item['point']}")
-    return "\n".join(lines)
-
-
 def build_yaml_snippet(points_with_notes: list[dict[str, str]]) -> str:
     """
     生成可以直接粘贴到模块 YAML 配置文件里的 steps 片段。
@@ -200,22 +185,62 @@ def build_yaml_snippet(points_with_notes: list[dict[str, str]]) -> str:
     return "\n".join(lines).rstrip() + ("\n" if lines else "")
 
 
-def save_generated_outputs(points_with_notes: list[dict[str, str]]) -> tuple[str, str]:
-    """保存 fallback_pos 列表和模块 YAML 片段。"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    fallback_text = build_fallback_lines(points_with_notes)
-    yaml_text = build_yaml_snippet(points_with_notes)
-    # 一份适合“只抄坐标”，一份适合“直接粘完整步骤”。
-    _ = FALLBACK_FILE.write_text(fallback_text + ("\n" if fallback_text else ""), encoding="utf-8")
-    _ = YAML_FILE.write_text(yaml_text, encoding="utf-8")
-    return fallback_text, yaml_text
+def save_coordinate_capture_files(
+    points_with_notes: list[dict[str, str]],
+    serial: str,
+    yaml_text: str,
+) -> tuple[Path, Path]:
+    """只保存本次最新 YAML，并把本次 YAML 追加到历史记录。"""
+    output_dir = get_coordinate_capture_dir()
+    cleanup_coordinate_capture_outputs(output_dir)
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    latest_yaml_path = output_dir / LATEST_YAML_FILE
+    history_yaml_path = output_dir / HISTORY_YAML_FILE
+    _ = latest_yaml_path.write_text(yaml_text, encoding="utf-8")
+
+    history_entry = build_history_entry(
+        generated_at=generated_at,
+        serial=serial,
+        point_count=len(points_with_notes),
+        yaml_text=yaml_text,
+    )
+    with history_yaml_path.open("a", encoding="utf-8") as fp:
+        _ = fp.write(history_entry)
+    return latest_yaml_path, history_yaml_path
+
+
+def cleanup_coordinate_capture_outputs(output_dir: Path) -> None:
+    """删除旧的单次产物，只保留总历史记录。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for item in output_dir.iterdir():
+        if not item.is_file() or item.name == HISTORY_YAML_FILE:
+            continue
+        item.unlink()
+
+
+def build_history_entry(
+    *,
+    generated_at: str,
+    serial: str,
+    point_count: int,
+    yaml_text: str,
+) -> str:
+    """生成追加到历史 YAML 的分段内容。"""
+    return (
+        "\n"
+        "# ======================================================================\n"
+        f"# 运行时间: {generated_at}\n"
+        f"# 连接设备: {serial}\n"
+        f"# 坐标数量: {point_count}\n"
+        "# ======================================================================\n"
+        f"{yaml_text.rstrip()}\n"
+    )
 
 
 def append_debug_log(message: str) -> None:
-    """把调试证据写入文件，便于确认事件状态机是否按预期变化。"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with DEBUG_FILE.open("a", encoding="utf-8") as fp:
-            _ = fp.write(message + "\n")
+    """保留调试调用入口，但不再写额外文件。"""
+    _ = message
 
 
 def is_touch_down(line: str) -> bool:
@@ -247,23 +272,23 @@ def capture_multiple_coordinates() -> None:
     - 最新坐标会立即复制到剪贴板
     - 先连续点完，再统一输入每一步备注
     - 按 Ctrl+C 手动结束
-    - 结束后会自动生成：
-      1. fallback_pos 列表
-      2. 可直接粘贴到模块 YAML 的 steps 片段
+    - 结束后只会在 coordinate_captures 下生成最新 YAML 和历史 YAML
     """
     print(">>> 正在初始化极速拾取...")
     print(">>> 初始化完成后，请直接在模拟器/手机界面连续点击多个位置。")
     print(">>> 每点击一次，就会新增一个坐标，并立即复制最新坐标。")
     print(">>> 本次改为先连续采集，等你按 Ctrl+C 结束后，再统一补备注。")
-    print(">>> 按 Ctrl+C 停止，停止后会自动输出 fallback_pos 列表和模块 YAML 片段。")
+    print(">>> 按 Ctrl+C 停止，停止后会自动保存最新 YAML，并追加到历史 YAML。")
 
     try:
-        device_path, max_x, max_y = detect_touch_device()
-        display_info = get_touch_display_info()
+        serial = select_android_device_serial()
+        device_path, max_x, max_y = detect_touch_device(serial)
+        display_info = get_touch_display_info(serial)
     except Exception as exc:
         print(f"错误: {exc}")
         return
 
+    print(f">>> 当前连接设备: {serial}")
     print(f">>> 监听设备: {device_path}")
     print(f">>> 触摸量程: x=0~{max_x}, y=0~{max_y}")
     print(
@@ -272,7 +297,7 @@ def capture_multiple_coordinates() -> None:
         + f"-> 当前正向分辨率 {display_info['upright_width']}x{display_info['upright_height']})"
     )
 
-    process, master_fd = start_getevent_process(device_path)
+    process, master_fd = start_getevent_process(device_path, serial)
 
     last_x = None
     last_y = None
@@ -332,23 +357,23 @@ def capture_multiple_coordinates() -> None:
         # 用户按 Ctrl+C 表示“采集结束，开始收口整理结果”。
         process.terminate()
         os.close(master_fd)
-        save_points(collected_points)
         points_with_notes = collect_step_remarks(collected_points)
-        fallback_text, yaml_text = save_generated_outputs(points_with_notes)
+        yaml_text = build_yaml_snippet(points_with_notes)
 
         if collected_points:
+            latest_yaml_path, history_yaml_path = save_coordinate_capture_files(
+                points_with_notes,
+                serial,
+                yaml_text,
+            )
             copy_to_clipboard(yaml_text or "\n".join(collected_points))
             print("\n>>> 已停止监听。")
             print(f">>> 共采集 {len(collected_points)} 个坐标。")
-            print(f">>> 全部坐标已保存到: {OUTPUT_FILE}")
-            print(f">>> fallback_pos 列表已保存到: {FALLBACK_FILE}")
-            print(f">>> 模块 YAML 片段已保存到: {YAML_FILE}")
+            print(f">>> 最新模块 YAML 片段已保存到: {latest_yaml_path}")
+            print(f">>> 历史 YAML 记录已追加到: {history_yaml_path}")
             print(">>> 已将模块 YAML 片段复制到剪贴板。")
-            print("\n>>> fallback_pos 列表如下：")
-            print(fallback_text or "(空)")
-            print("\n>>> 模块 YAML 片段如下：")
-            print(yaml_text or "(空)")
         else:
+            cleanup_coordinate_capture_outputs(get_coordinate_capture_dir())
             print("\n>>> 已停止监听，但本次没有采集到坐标。")
 
 

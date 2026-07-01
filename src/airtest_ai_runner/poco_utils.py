@@ -445,7 +445,7 @@ def _build_snapshot_record(
     click_order: int | None,
     selector: dict[str, Any],
 ) -> dict[str, Any]:
-    """生成 Excel/报告共用的截图记录。"""
+    """生成表格/报告共用的截图记录。"""
     record: dict[str, Any] = {
         "module_name": module_name,
         "step_index": step_index,
@@ -516,7 +516,7 @@ def _capture_landscape_snapshot(image_path: Path, message: str) -> None:
     保存业务截图，并在落盘后统一修正成横版。
 
     当前项目的业务页面是横屏为主，所以这里把竖版截图统一旋转成横版，
-    避免日志目录和 Excel 模板里看到的图片方向不一致。
+    避免日志目录和表格里看到的图片方向不一致。
     """
     _ = snapshot(filename=str(image_path), msg=message)
     _ = normalize_image_file_for_landscape(image_path)

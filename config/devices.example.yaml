@@ -2,7 +2,7 @@ adb_host: "127.0.0.1"
 adb_port: 5037
 parallel_workers: 4
 cases_dir: "cases"
-output_dir: "/Users/sunyi/Downloads/artifacts"
+output_dir: "/Users/sunyi/Downloads/multilang_check_artifacts"
 baseline_dir: "baselines"
 diff_threshold: 0.01
 

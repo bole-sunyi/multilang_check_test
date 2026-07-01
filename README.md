@@ -7,9 +7,9 @@
 - 你最常改的是 `config/*.yaml`，不是 Python 源码。
 - `stamp_test`、`byd_test`、`atw_test` 分别独立执行，不会一条命令连续跑三个。
 - 单独运行某个模块前，程序会先清空默认产物目录。
-- 产物默认写到 `/Users/sunyi/Downloads/artifacts`，也可以用 `ARTIFACTS_ROOT` 临时改掉。
+- 产物默认写到 `/Users/sunyi/Downloads/multilang_check_artifacts`，也可以用 `ARTIFACTS_ROOT` 临时改掉。
 - 当前执行策略是 Poco selector 优先；识别不到游戏贴图时才临时使用 `fallback_pos`。
-- 每个模块会把截图写入同一个 Excel 的对应 sheet：`stamp`、`byd`、`atw`。
+- 每个模块会写入本地表格，并使用对应 sheet：`stamp`、`byd`、`atw`。
 
 ## 项目里有什么
 
@@ -103,12 +103,12 @@ python cases/atw_test.air/atw_test.py
 - 读取对应 `config/*_test.yaml`
 - 使用 Poco selector 优先执行步骤
 - 自动截图并修正为横版
-- 把截图写入 Excel 对应 sheet
-- 生成当前模块自己的 `report.md`、`report.html`、`report.json`
+- 写入本地表格，并写入截图名称和截图
+- 生成当前模块自己的 HTML 报告
 
 ### 4. 设备和包名
 
-默认设备串号是 `127.0.0.1:16448`，默认包名是 `slots.pcg.casino.games.free.android`。如果要覆盖，可以这样：
+单模块启动后会自动发现可连接的 adb 设备/模拟器端口；如果只有一台设备会自动连接，多台设备时会让你选择。默认包名是 `slots.pcg.casino.games.free.android`，如果要覆盖，可以这样：
 
 ```bash
 DEVICE_SERIAL="你的设备串号" APP_PACKAGE_NAME="你的真实包名" python cases/atw_test.air/atw_test.py
@@ -122,7 +122,7 @@ adb_port: 5037
 parallel_workers: 4
 retry_count: 1
 cases_dir: "cases"
-output_dir: "/Users/sunyi/Downloads/artifacts"
+output_dir: "/Users/sunyi/Downloads/multilang_check_artifacts"
 baseline_dir: "baselines"
 diff_threshold: 0.01
 refresh_baseline: false
@@ -159,27 +159,20 @@ python cases/byd_test.air/byd_test.py
 python cases/stamp_test.air/stamp_test.py
 ```
 
-### 单模块运行和 Excel
+### 单模块运行和本地表格
 
-单模块脚本默认会更新这个 Excel 模板：
+单模块脚本默认会写入这个本地表格：
 
 ```text
-/Users/sunyi/Downloads/多语测试模板.xlsx
+/Users/sunyi/Downloads/multilang_check_artifacts/YYYY-MM-DD/多语测试模板.xlsx
 ```
 
-如果这个文件不存在，脚本会自动创建一份最小可用工作簿。`stamp_test` 写入 `stamp` sheet，`byd_test` 写入 `byd` sheet，`atw_test` 写入 `atw` sheet。每个 sheet 从 A3/B3/C3 开始写入步骤名称、截图、定位方式。
+输出内容会写入对应模块 sheet，主要使用：
 
-如果你想写入别的模板，可以用环境变量覆盖：
+- A 列：截图名称
+- B 列：截图图片
 
-```bash
-EXCEL_TEMPLATE_PATH="/Users/sunyi/Downloads/我的多语模板.xlsx" python cases/atw_test.air/atw_test.py
-```
-
-也可以使用语义更明确的变量名：
-
-```bash
-MULTILANG_EXCEL_TEMPLATE_PATH="/Users/sunyi/Downloads/我的多语模板.xlsx" python cases/atw_test.air/atw_test.py
-```
+表格写完后会提示你输入新表格名称；直接回车则保留 `多语测试模板.xlsx`。执行报告会放到同一个日期目录下，也会提示你输入报告名称。
 
 ## 最常用的环境变量
 
@@ -187,8 +180,9 @@ MULTILANG_EXCEL_TEMPLATE_PATH="/Users/sunyi/Downloads/我的多语模板.xlsx" p
 
 - `APP_PACKAGE_NAME`：覆盖目标 App 包名。
 - `ARTIFACTS_ROOT`：覆盖产物输出目录。
-- `DEVICE_SERIAL`：单脚本和辅助脚本使用的默认设备串号。
+- `DEVICE_SERIAL`：可选，指定设备串号；不传时会自动发现并选择设备。
 - `AIRTEST_DEVICE_URI`：高级用法，直接覆盖 Airtest 设备连接串。
+- `MULTILANG_EXCEL_TEMPLATE_PATH` / `EXCEL_TEMPLATE_PATH`：可选，覆盖本地表格输出路径。
 
 例如单跑某个模块并指定设备：
 
@@ -201,30 +195,34 @@ DEVICE_SERIAL="127.0.0.1:16448" python cases/atw_test.air/atw_test.py
 
 ## 结果去哪里看
 
-默认产物目录：
+默认产物根目录：
 
 ```text
-/Users/sunyi/Downloads/artifacts
+/Users/sunyi/Downloads/multilang_check_artifacts
 ```
 
 如果你在执行前传了 `ARTIFACTS_ROOT`，实际输出位置会改成你指定的目录。
+
+单模块每次执行会先清空根目录，再创建当天日期目录，例如：
+
+```text
+/Users/sunyi/Downloads/multilang_check_artifacts/2026-07-01/
+```
+
+日期目录里只保留表格、截图目录和 HTML 报告。
 
 ### 旧批量回归后
 
 如果你仍然使用 `run_regression.sh`，通常先看这些：
 
-- `report.md`
 - `report.html`
-- `report.json`
 - `raw_results.json`
 
 也就是：
 
 ```text
-/Users/sunyi/Downloads/artifacts/report.md
-/Users/sunyi/Downloads/artifacts/report.html
-/Users/sunyi/Downloads/artifacts/report.json
-/Users/sunyi/Downloads/artifacts/raw_results.json
+/Users/sunyi/Downloads/multilang_check_artifacts/report.html
+/Users/sunyi/Downloads/multilang_check_artifacts/raw_results.json
 ```
 
 ### 单跑某个模块后
@@ -232,17 +230,15 @@ DEVICE_SERIAL="127.0.0.1:16448" python cases/atw_test.air/atw_test.py
 例如单跑 `atw_test`，常看这些：
 
 ```text
-/Users/sunyi/Downloads/artifacts/atw_test_logs/
-/Users/sunyi/Downloads/artifacts/atw_test_logs/report.md
-/Users/sunyi/Downloads/artifacts/atw_test_logs/report.html
-/Users/sunyi/Downloads/artifacts/atw_test_logs/report.json
-/Users/sunyi/Downloads/artifacts/atw_test_logs/atw_screen/
+/Users/sunyi/Downloads/multilang_check_artifacts/2026-07-01/多语测试模板.xlsx
+/Users/sunyi/Downloads/multilang_check_artifacts/2026-07-01/atw_screen/
+/Users/sunyi/Downloads/multilang_check_artifacts/2026-07-01/2026-07-01_atw_test_执行报告.html
 ```
 
 另外两个模块同理：
 
-- `byd_test` 对应 `byd_test_logs/byd_screen`
-- `stamp_test` 对应 `stamp_test_logs/stamp_screen`
+- `byd_test` 对应 `byd_screen`
+- `stamp_test` 对应 `stamp_screen`
 
 ## 你最常改什么
 
@@ -315,8 +311,11 @@ python quick_click.py
 它会：
 
 - 监听你在设备上的真实点击
+- 启动时自动发现可连接的模拟器/手机，多个设备时可选择
 - 自动换算成 `0-1` 百分比坐标
-- 保存到 `/Users/sunyi/Downloads/artifacts/quick_click/`
+- 在项目内生成 `coordinate_captures/latest_quick_click.yaml`，这是最常复制使用的模块 YAML 片段
+- 每次运行会自动删除旧的单次产物
+- 同时把每次运行的 YAML 追加到 `coordinate_captures/quick_click_history.yaml`，历史中会标注运行时间、设备和坐标数量
 - 生成可直接粘贴到 YAML 的步骤片段
 
 ### 2. 导出当前页面：`dump_current_screen.py`
@@ -327,7 +326,7 @@ source .venv/bin/activate
 python dump_current_screen.py
 ```
 
-如果要指定设备串号：
+启动时会自动发现可连接设备，多个设备时会让你选择。如果仍要指定设备串号：
 
 ```bash
 DEVICE_SERIAL="127.0.0.1:16448" python dump_current_screen.py
@@ -337,7 +336,7 @@ DEVICE_SERIAL="127.0.0.1:16448" python dump_current_screen.py
 
 - 当前截图 `screen.png`
 - 当前页面节点树 `nodes.json`
-- 默认输出到 `/Users/sunyi/Downloads/artifacts/current_dump/`
+- 默认输出到 `/Users/sunyi/Downloads/multilang_check_artifacts/current_dump/`
 
 ### 3. 鼠标悬停看坐标：`poco_hover_inspector.py`
 
@@ -353,7 +352,7 @@ python poco_hover_inspector.py
 DEVICE_SERIAL="127.0.0.1:16448" python poco_hover_inspector.py
 ```
 
-它会弹出当前截图窗口，鼠标移动时终端会实时显示当前位置的大概归一化坐标。
+它会弹出当前截图窗口，鼠标移动时预览当前位置的大概归一化坐标；左键点击目标位置后，会在项目内生成 `coordinate_captures/latest_hover_inspector.yaml`。
 
 ### 4. 导出 Poco 节点树：`poco_inspector.py`
 
@@ -367,7 +366,7 @@ python -m airtest_ai_runner.poco_inspector
 如果要手工指定输出目录：
 
 ```bash
-python -m airtest_ai_runner.poco_inspector --output-dir /Users/sunyi/Downloads/artifacts/manual_inspect
+python -m airtest_ai_runner.poco_inspector --output-dir /Users/sunyi/Downloads/multilang_check_artifacts/manual_inspect
 ```
 
 ## 如果按钮点不准
@@ -400,5 +399,5 @@ python -m pip install -r requirements.txt
 
 - 新人第一次跑，优先单独跑一个模块，例如 `python cases/atw_test.air/atw_test.py`
 - 日常改步骤，优先改 `config/*.yaml`
-- 默认产物看 `/Users/sunyi/Downloads/artifacts`
+- 默认产物看 `/Users/sunyi/Downloads/multilang_check_artifacts`
 - 能用 Poco selector 就先用 Poco，坐标只作为临时兜底

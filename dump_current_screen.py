@@ -20,7 +20,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from airtest.core.api import auto_setup, snapshot
-from airtest_ai_runner.device_utils import build_android_device_uri
+from airtest_ai_runner.device_utils import build_android_device_uri, select_android_device_serial
 from airtest_ai_runner.poco_utils import build_android_poco, dump_visible_nodes, write_poco_nodes_field_guide
 from airtest_ai_runner.paths import get_current_dump_dir
 from airtest_ai_runner.screenshot_utils import normalize_image_file_for_landscape
@@ -28,11 +28,6 @@ from airtest_ai_runner.screenshot_utils import normalize_image_file_for_landscap
 
 ADB_HOST = "127.0.0.1"
 ADB_PORT = 5037
-DEVICE_SERIAL = os.environ.get(
-    "DEVICE_SERIAL",
-    sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1:16448",
-).strip()
-DEVICE_URI = build_android_device_uri(ADB_HOST, ADB_PORT, DEVICE_SERIAL)
 
 
 def dump_now():
@@ -43,9 +38,12 @@ def dump_now():
     """
 
     # 1. 连接设备（MuMu 模拟器）
-    # 这里使用项目当前已经验证过的模拟器地址，避免新手一开始就卡在连接参数上。
+    # 启动时自动发现可连接设备，避免每次手工维护固定模拟器端口。
     print("正在连接设备...")
-    auto_setup(__file__, devices=[DEVICE_URI])
+    preferred_serial = os.environ.get("DEVICE_SERIAL", sys.argv[1] if len(sys.argv) > 1 else "").strip()
+    device_serial = select_android_device_serial(adb_host=ADB_HOST, preferred_serial=preferred_serial)
+    device_uri = build_android_device_uri(ADB_HOST, ADB_PORT, device_serial)
+    auto_setup(__file__, devices=[device_uri])
 
     # 2. 初始化 Poco 引擎
     # Poco 负责读取页面上的控件结构，相当于“把屏幕翻译成可分析的数据”。

@@ -10,6 +10,7 @@
 import cv2
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 确保能搜到我们的工具包
@@ -19,15 +20,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from airtest.core.api import auto_setup, snapshot, connect_device
-from airtest_ai_runner.device_utils import build_android_device_uri
+from airtest_ai_runner.device_utils import build_android_device_uri, select_android_device_serial
 from airtest_ai_runner.poco_utils import build_android_poco
-from airtest_ai_runner.paths import get_hover_inspector_dir
+from airtest_ai_runner.paths import get_coordinate_capture_dir, get_hover_inspector_dir
 
 
 ADB_HOST = "127.0.0.1"
 ADB_PORT = 5037
-DEVICE_SERIAL = os.environ.get("DEVICE_SERIAL", "127.0.0.1:16448").strip()
-DEVICE_URI = build_android_device_uri(ADB_HOST, ADB_PORT, DEVICE_SERIAL)
 
 # 全局变量，用于存储采集到的数据
 # poco_nodes: 当前页面所有已摊平的节点
@@ -36,6 +35,12 @@ DEVICE_URI = build_android_device_uri(ADB_HOST, ADB_PORT, DEVICE_SERIAL)
 poco_nodes = []
 screen_img = None
 display_img = None
+captured_points = []
+current_hover_info = None
+selected_serial = ""
+session_started_at = ""
+hover_yaml_path = None
+latest_hover_yaml_path = None
 
 
 def get_node_at(x_norm, y_norm):
@@ -71,72 +76,125 @@ def get_node_at(x_norm, y_norm):
 
     return best_node
 
+
+def save_hover_coordinate_yaml() -> None:
+    """把鼠标点击确认过的坐标保存到项目内 YAML。"""
+    if hover_yaml_path is None or latest_hover_yaml_path is None:
+        return
+    lines = [
+        f"# 运行时间: {session_started_at}",
+        f"# 更新时间: {datetime.now().isoformat(timespec='seconds')}",
+        f"# 连接设备: {selected_serial}",
+        f"# 坐标数量: {len(captured_points)}",
+        "",
+    ]
+    for point in captured_points:
+        lines.append(f"# {point['index']:02d}. {point['captured_at']}")
+        lines.append(point["yaml_line"])
+        lines.append("")
+    yaml_text = "\n".join(lines).rstrip() + "\n"
+    _ = hover_yaml_path.write_text(yaml_text, encoding="utf-8")
+    _ = latest_hover_yaml_path.write_text(yaml_text, encoding="utf-8")
+
+
+def update_hover_info(x, y):
+    """刷新当前位置预览，并返回当前点位信息。"""
+    global display_img, current_hover_info
+    if screen_img is None:
+        return None
+    h, w = screen_img.shape[:2]
+    # 计算归一化坐标 (Poco 使用的 0-1 坐标)
+    x_norm = x / w
+    y_norm = y / h
+
+    # 查找该位置的节点
+    node = get_node_at(x_norm, y_norm)
+
+    # 刷新显示图
+    # 每次鼠标一移动，都从原图重新复制一份，避免十字线和框越画越多。
+    temp_img = screen_img.copy()
+
+    # 绘制十字线
+    cv2.line(temp_img, (0, y), (w, y), (0, 255, 0), 1)
+    cv2.line(temp_img, (x, 0), (x, h), (0, 255, 0), 1)
+
+    fallback_pos = [round(x_norm, 3), round(y_norm, 3)]
+    current_hover_info = {
+        "fallback_pos": fallback_pos,
+        "fallback_pos_text": f"[{fallback_pos[0]}, {fallback_pos[1]}]",
+        "yaml_line": f"fallback_pos: [{fallback_pos[0]}, {fallback_pos[1]}]",
+        "pixel": [int(x), int(y)],
+        "node": None,
+    }
+
+    if node:
+        # 提取节点信息
+        name = node.get("name", "Unknown")
+        text = node.get("text", "")
+        info = f"Pos: [{x_norm:.3f}, {y_norm:.3f}] | Name: {name} | Text: {text}"
+        current_hover_info["node"] = {"name": name, "text": text}
+
+        # 在窗口左上角显示信息
+        cv2.putText(temp_img, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        # 绘制节点边框
+        pos = node["pos"]
+        size = node["size"]
+        nx, ny = int((pos[0] - size[0]/2) * w), int((pos[1] - size[1]/2) * h)
+        nw, nh = int(size[0] * w), int(size[1] * h)
+        cv2.rectangle(temp_img, (nx, ny), (nx + nw, ny + nh), (0, 0, 255), 2)
+    else:
+        info = f"Pos: [{x_norm:.3f}, {y_norm:.3f}] | No Poco node"
+        cv2.putText(temp_img, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    display_img = temp_img
+    cv2.imshow("Poco Hover Inspector (Press ESC to Quit)", temp_img)
+    return current_hover_info
+
 def on_mouse_move(event, x, y, _flags, _param):
     """
     鼠标移动回调函数。
     只要鼠标在图片窗口里移动一次，这个函数就会自动触发一次。
     """
-    global display_img
     _ = (_flags, _param)
-    if event == cv2.EVENT_MOUSEMOVE:
-        if screen_img is None:
-            return
-        h, w = screen_img.shape[:2]
-        # 计算归一化坐标 (Poco 使用的 0-1 坐标)
-        x_norm = x / w
-        y_norm = y / h
+    if event not in (cv2.EVENT_MOUSEMOVE, cv2.EVENT_LBUTTONDOWN):
+        return
 
-        # 查找该位置的节点
-        node = get_node_at(x_norm, y_norm)
+    hover_info = update_hover_info(x, y)
+    if event != cv2.EVENT_LBUTTONDOWN or hover_info is None:
+        return
 
-        # 刷新显示图
-        # 每次鼠标一移动，都从原图重新复制一份，避免十字线和框越画越多。
-        temp_img = screen_img.copy()
-
-        # 绘制十字线
-        cv2.line(temp_img, (0, y), (w, y), (0, 255, 0), 1)
-        cv2.line(temp_img, (x, 0), (x, h), (0, 255, 0), 1)
-
-        if node:
-            # 提取节点信息
-            name = node.get("name", "Unknown")
-            text = node.get("text", "")
-            # 打印到控制台，方便直接复制
-            info = f"Pos: [{x_norm:.3f}, {y_norm:.3f}] | Name: {name} | Text: {text}"
-
-            # 在窗口左上角显示信息
-            cv2.putText(temp_img, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            # 绘制节点边框
-            pos = node["pos"]
-            size = node["size"]
-            nx, ny = int((pos[0] - size[0]/2) * w), int((pos[1] - size[1]/2) * h)
-            nw, nh = int(size[0] * w), int(size[1] * h)
-            cv2.rectangle(temp_img, (nx, ny), (nx + nw, ny + nh), (0, 0, 255), 2)
-
-            # 实时输出到终端 (使用 \r 实现原地刷新)
-            sys.stdout.write(f"\r[检测到节点] 建议坐标: [{x_norm:.3f}, {y_norm:.3f}] | 文本: {text} | 名称: {name}    ")
-            sys.stdout.flush()
-        else:
-            sys.stdout.write(f"\r[空白区域] 当前坐标: [{x_norm:.3f}, {y_norm:.3f}]                                ")
-            sys.stdout.flush()
-
-        cv2.imshow("Poco Hover Inspector (Press ESC to Quit)", temp_img)
+    record = dict(hover_info)
+    record["index"] = len(captured_points) + 1
+    record["captured_at"] = datetime.now().isoformat(timespec="seconds")
+    captured_points.append(record)
+    save_hover_coordinate_yaml()
+    print(f"\n>>> 已记录第 {record['index']} 个坐标: {record['yaml_line']}")
+    print(f">>> 坐标 YAML: {hover_yaml_path}")
 
 
 def start_inspector():
-    global poco_nodes, screen_img
+    global poco_nodes, screen_img, selected_serial, session_started_at, hover_yaml_path, latest_hover_yaml_path
 
     print("="*60)
     print("【Poco 鼠标悬停查询工具】")
-    print("用法: 鼠标在弹出的窗口上移动，即可在窗口顶部和控制台看到坐标。")
+    print("用法: 鼠标移动可预览坐标，左键点击会把当前坐标记录到 YAML。")
     print("="*60)
 
     # 1. 连接设备
     # 这里先连接模拟器，再初始化 Airtest，确保后续截图和 Poco 读取都能正常工作。
     print("正在连接设备并截取当前画面...")
-    connect_device(DEVICE_URI)
-    auto_setup(__file__, devices=[DEVICE_URI])
+    selected_serial = select_android_device_serial(adb_host=ADB_HOST)
+    device_uri = build_android_device_uri(ADB_HOST, ADB_PORT, selected_serial)
+    connect_device(device_uri)
+    auto_setup(__file__, devices=[device_uri])
+
+    session_started_at = datetime.now().isoformat(timespec="seconds")
+    coordinate_dir = get_coordinate_capture_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    hover_yaml_path = coordinate_dir / f"hover_inspector_{timestamp}.yaml"
+    latest_hover_yaml_path = coordinate_dir / "latest_hover_inspector.yaml"
+    save_hover_coordinate_yaml()
 
     # 2. 采集数据
     # 这里直接读取 Poco 的原始层级树，再手工摊平成一维列表。
@@ -180,7 +238,8 @@ def start_inspector():
     cv2.setMouseCallback("Poco Hover Inspector (Press ESC to Quit)", on_mouse_move)
 
     print("\n工具已启动！请在弹出的图片窗口上移动鼠标。")
-    print("找到满意的按钮后，直接复制控制台输出的 [x, y] 坐标到 yaml 即可。")
+    print("找到满意的按钮后，左键点击该位置，坐标会写入项目内 YAML。")
+    print(f"本次坐标 YAML: {hover_yaml_path}")
 
     cv2.imshow("Poco Hover Inspector (Press ESC to Quit)", screen_img)
 
@@ -193,7 +252,8 @@ def start_inspector():
     cv2.destroyAllWindows()
     if screen_file.exists():
         screen_file.unlink()
-    print("\n工具已关闭。")
+    print(f"\n工具已关闭，共记录 {len(captured_points)} 个坐标。")
+    print(f"坐标 YAML: {hover_yaml_path}")
 
 if __name__ == "__main__":
     start_inspector()
