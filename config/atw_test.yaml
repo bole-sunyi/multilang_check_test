@@ -160,3 +160,9 @@ steps:
     snapshot_after: true
 
   
+
+  - name: "【操作】再次关闭atw"
+    action: "click"
+    fallback_pos: [0.9707, 0.0326]
+    sleep_after: 1                    # 第 3 步点击后等待 1 秒，再截图，便于观察界面反馈
+    snapshot_after: true
