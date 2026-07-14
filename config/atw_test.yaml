@@ -1,8 +1,8 @@
 # ==========================================================
 # atw_test 模块业务流配置文件
 # ----------------------------------------------------------
-# 这份文件目前是按项目现有有效流程完整复制出来的模板版本。
-# 如果后面你采到了 atw 模块自己的真实坐标，只需要改 steps 里的坐标即可。
+# 这份文件只使用 Poco selector 执行点击。
+# 新增步骤时，优先从 dump_current_screen.py 生成的 nodes_steps.yaml 复制 name + chain。
 # ==========================================================
 
 # 1. 基础配置区
@@ -10,15 +10,23 @@ package_name_env: "APP_PACKAGE_NAME"
 startup_wait_seconds: 3               # 启动游戏后额外等待 3 秒，避免资源还没加载完就开始点击
 stop_app_after_run: false             # 跑完后先不关 App，方便你肉眼确认页面状态
 dump_poco_tree: true                  # 每次执行都导出 Poco 控件树，方便排查“为什么点不到”
-excel_sheet_name: "atw"               # 本模块截图写入本地表格的 atw sheet
+excel_sheet_name: "atw"               # 未开启钉钉导出时，才会写入本地 Excel 的 atw sheet
+dingtalk_export:
+  enabled: true                       # 方案 2（Cursor MCP版）：模块执行后生成待同步 JSON，不再生成本地 Excel
+  workbook_id: "https://alidocs.dingtalk.com/i/nodes/dpYLaezmVNLd17qQSPXQzPAq8rMqPxX6?utm_scene=team_space"
+  sheet_id: "kgqie6hm"
 
 # Poco selector 配置模板：
 # - action: "click"
 #   selector:
-#     text: "按钮文字"                  # 或 resourceId / resource_id / desc / name / type
+#     name: "footer"                   # 游戏节点名，优先从 Poco 节点树里复制
+#     chain:                           # 可选：继续按 child/offspring 链路定位
+#       - method: "child"
+#         name: "screentouch_node"
+#       - method: "child"
+#         name: "spin_bg"
 #     index: 0                         # 多个节点同时命中时可指定第几个
 #   relative_pos: [0.5, 0.5]           # 可选：点击控件内部的相对位置
-#   fallback_pos: [0.5, 0.5]           # 仅当 Poco 节点树完全识别不到时临时兜底
 
 # 2. 业务步骤区
 steps:
@@ -29,15 +37,57 @@ steps:
   - name: "【准备】等待主界面完全加载"
     action: "sleep"
     seconds: 3                        # 额外多等 3 秒，确保主界面动画和资源都稳定下来
+   
 
-  # 目的：
-  # 1. 先点到 atw 流程的第一个入口；
-  # 2. 这一步相当于“从当前主界面切进 atw 所在的大入口区域”；
-  # 3. 点完后，预期应该看到 atw 后续业务链路所在的新界面，而不是仍停留在原主界面。
-  - name: "【操作】a级入口"
+  - name: "【操作】点击COLLECTIONS入口"
+    action: "snapshot"
+    message: "atw_test 主界面状态，用于确认是否能看到 COLLECTIONS 入口"
+
+  # 节点识别: a_set_node
+  # 说明：这是底部 COLLECTIONS 入口的父级容器，已验证比 title_label 文本节点更适合点击。
+  - name: "【操作】点击COLLECTIONS入口"
     action: "click"
-    fallback_pos: [0.3799, 0.9115]
-    sleep_after: 1                    # 第 1 步点击后等待 1 秒，再截图，便于观察界面反馈
-    snapshot_after: true
+    selector:
+      name: "Lobby_Footer_Node"
+      chain:
+        - method: "child"
+          name: "footer"
+        - method: "child"
+          name: "middle_node"
+        - method: "child"
+          name: "a_set_node"
+    sleep_after: 0.5
+    snapshot_after: false
 
-  
+
+
+  # 节点识别: timer_label
+  # 显示文本: 83D 15H
+  # 来源: selector_failure/05_【操作】点击level_item/nodes_steps.yaml
+  - name: "【操作】点击ATW入口"
+    action: click
+    selector:
+      name: Lobby_Footer_Node
+      chain:
+        - method: child
+          name: footer
+        - method: child
+          name: middle_node
+        - method: child
+          name: a_set_node
+        - method: child
+          name: unlock_node
+        - method: child
+          name: tip_node
+        - method: child
+          name: bubble_node
+        - method: child
+          name: atw_node
+        - method: child
+          name: unlock_node
+        - method: child
+          name: timer_node
+        - method: child
+          name: timer_label
+    sleep_after: 1
+    snapshot_after: true

@@ -17,11 +17,49 @@ import re
 from pathlib import Path
 from typing import Any
 
-from airtest.core.api import sleep, snapshot, touch
+from airtest.core.api import device as current_device
+from airtest.core.api import sleep, snapshot
 from airtest.core.helper import log as airtest_log
 from poco.drivers.android.uiautomation import AndroidUiautomationPoco
+from poco.drivers.std import StdPoco
 
 from .screenshot_utils import normalize_image_file_for_landscape
+
+
+def build_poco(device_obj: Any | None = None) -> Any:
+    """
+    创建本工具默认使用的 Poco 驱动。
+
+    多语言截图的目标是 Cocos 游戏内 UI，默认使用和 AirTest 主仓库一致的
+    `StdPoco`。如果临时需要识别 Android 原生弹窗或系统控件，可以设置：
+    `POCO_DRIVER=android`。
+    """
+    driver = os.environ.get("POCO_DRIVER", "std").strip().lower()
+    if driver in {"std", "game", "cocos", "cocos2dx"}:
+        return build_game_poco(device_obj)
+    if driver in {"android", "uiautomation", "native"}:
+        return build_android_poco()
+    raise ValueError(f"不支持的 POCO_DRIVER={driver!r}，可选值：std/android")
+
+
+def build_game_poco(device_obj: Any | None = None) -> StdPoco:
+    """
+    创建游戏 UI 使用的标准 Poco 驱动。
+
+    该实现对齐当前 AirTest 仓库的 `airtest_booststrap.init_poco()`：
+    通过已连接的 Airtest device 访问游戏内 Cocos2d-x Lua Poco SDK。
+    """
+    resolved_device = device_obj or current_device()
+    refresh_rate = env_float("POCO_REFRESH_RATE", 0.5)
+    timeout = env_float("POCO_TIMEOUT", 3.0)
+    auto_refresh = env_flag("POCO_AUTO_REFRESH", default=False)
+    return StdPoco(
+        device=resolved_device,
+        refresh_rate=refresh_rate,
+        timeout=timeout,
+        auto_refresh=auto_refresh,
+        implicit_refresh=False,
+    )
 
 
 def build_android_poco() -> AndroidUiautomationPoco:
@@ -54,8 +92,20 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_float(name: str, default: float) -> float:
+    """读取浮点型环境变量，格式错误时保留默认值。"""
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        print(f"环境变量 {name}={raw_value!r} 不是有效数字，已使用默认值 {default}")
+        return default
+
+
 def dump_visible_nodes(
-    poco: AndroidUiautomationPoco,
+    poco: Any,
     output_path: Path,
     max_depth: int = 15,
 ) -> list[dict[str, Any]]:
@@ -118,7 +168,230 @@ def dump_visible_nodes(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(flattened, ensure_ascii=False, indent=2), encoding="utf-8")
     write_poco_nodes_field_guide(output_path)
+    write_poco_steps_yaml(output_path, flattened)
     return flattened
+
+
+def write_poco_steps_yaml(nodes_json_path: Path, nodes: list[dict[str, Any]]) -> Path:
+    """把 Poco 节点清单同步转换成可复制到模块配置里的 steps YAML。"""
+    import yaml
+
+    class PocoStepDumper(yaml.SafeDumper):
+        """
+        让 PyYAML 输出更适合复制到 config/*.yaml 的缩进格式。
+
+        PyYAML 默认会把列表写成：
+        chain:
+        - method: child
+
+        这种格式虽然是合法 YAML，但新手复制到已有 steps 下时很容易缩进错。
+        这里强制改成：
+        chain:
+          - method: child
+
+        这样更接近项目配置文件里的手写格式。
+        """
+
+        def increase_indent(self, flow: bool = False, indentless: bool = False) -> Any:
+            return super().increase_indent(flow, False)
+
+    records = build_poco_node_step_records(nodes)
+    yaml_path = nodes_json_path.with_name(f"{nodes_json_path.stem}_steps.yaml")
+    header = (
+        "# 由 Poco 节点树自动生成的可执行 YAML 片段。\n"
+        "# 用法：从下面挑选目标节点，复制到 config/*_test.yaml 的 steps 下即可执行。\n"
+        "# 自动生成内容只使用 name + chain，不生成坐标兜底。\n"
+        "# 每个步骤前面的注释用于人工识别节点，复制时可以一起复制，也可以只复制 - name 开始的 YAML。\n"
+    )
+    yaml_parts = [header, "steps:\n"]
+    for record in records:
+        yaml_parts.extend(_build_node_identity_comments(record["node"]))
+        yaml_parts.append(
+            yaml.dump(
+                [record["step"]],
+                Dumper=PocoStepDumper,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+            )
+        )
+    yaml_text = "".join(yaml_parts)
+    yaml_path.write_text(yaml_text, encoding="utf-8")
+    return yaml_path
+
+
+def build_poco_node_steps(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从节点列表生成执行器支持的 click step。"""
+    return [record["step"] for record in build_poco_node_step_records(nodes)]
+
+
+def build_poco_node_step_records(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    从节点列表生成带节点说明的 click step。
+
+    这里故意只生成 `selector.name + selector.chain` 这一种结构。
+    原因是当前游戏是 Cocos Poco，实际验证下来：
+    1. `desc` 经常只是 Label 或内部描述，不一定能稳定点击；
+    2. 坐标点击不利于维护，也容易受分辨率、方向和 UI 调整影响；
+    3. `name + chain` 最接近 Poco 节点树本身，复制到模块 YAML 后最容易复现。
+    """
+    candidates: list[dict[str, Any]] = []
+    selector_counts: dict[str, int] = {}
+
+    for node in nodes:
+        step = _build_step_from_node(node)
+        if not step:
+            continue
+        selector_key = _selector_identity(step.get("selector"))
+        if selector_key:
+            selector_counts[selector_key] = selector_counts.get(selector_key, 0) + 1
+        candidates.append({"step": step, "node": node})
+
+    selector_seen: dict[str, int] = {}
+    for record in candidates:
+        step = record["step"]
+        selector = step.get("selector")
+        selector_key = _selector_identity(selector)
+        if not selector_key or selector_counts.get(selector_key, 0) <= 1:
+            continue
+        current_index = selector_seen.get(selector_key, 0)
+        selector_seen[selector_key] = current_index + 1
+        selector["index"] = current_index
+
+    return candidates
+
+
+def _build_node_identity_comments(node: dict[str, Any]) -> list[str]:
+    """
+    为 `nodes_steps.yaml` 生成更适合人工识别的注释。
+
+    这些注释不会影响 YAML 执行，但能帮助新人回答：
+    “这个步骤到底对应截图里的哪个游戏节点？”
+    """
+    lines = ["\n"]
+    lines.append("# ------------------------------------------------------------\n")
+    lines.append(f"# 节点识别: {_node_label(node)}\n")
+
+    text = _clean_locator_value(node.get("text"))
+    desc = _clean_locator_value(node.get("desc"))
+    path = _clean_locator_value(node.get("path"))
+    pos = _format_normalized_pair(node.get("pos"))
+    size = _format_normalized_pair(node.get("size"))
+
+    if text:
+        lines.append(f"# 显示文本: {text}\n")
+    if desc:
+        lines.append(f"# 描述信息: {desc}\n")
+    if pos:
+        lines.append(f"# Poco中心点: {pos}\n")
+    if size:
+        lines.append(f"# Poco大小: {size}\n")
+    if path:
+        lines.append(f"# Poco路径: {path}\n")
+    lines.append("# 复制建议: 优先复制下面从 '- name:' 开始的整个步骤到 config/*.yaml 的 steps 下。\n")
+    return lines
+
+
+def _build_step_from_node(node: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    把单个 Poco 节点转换成一个可执行步骤。
+
+    如果节点没有稳定路径，就不生成步骤。这样 `nodes_steps.yaml`
+    里只保留“复制后大概率能跑”的内容，减少新人误复制无效节点。
+    """
+    if not node.get("visible", True) or not node.get("enabled", True):
+        return None
+
+    selector = _build_selector_from_path(node.get("path"))
+    if not selector:
+        return None
+
+    label = _node_label(node)
+    step: dict[str, Any] = {
+        "name": f"【操作】点击{label}",
+        "action": "click",
+    }
+    if selector:
+        step["selector"] = selector
+    step["sleep_after"] = 1
+    step["snapshot_after"] = True
+    return step
+
+
+def _build_selector_from_path(value: Any) -> dict[str, Any]:
+    """
+    把 `nodes.json` 里的 path 转成 YAML selector。
+
+    path 示例：
+    `root/1:<Node | Tag = -1/1:Lobby_Footer_Node/0:footer/2:middle_node`
+
+    转换规则：
+    1. 跳过 `root` 和 `<Node ...>` 这种没有稳定业务名的片段；
+    2. 第一个有效名字作为 `selector.name`；
+    3. 后续有效名字按顺序变成 `chain: child`。
+    """
+    path = _clean_locator_value(value)
+    if not path:
+        return {}
+
+    names: list[str] = []
+    for segment in path.split("/"):
+        if ":" not in segment:
+            continue
+        _, raw_name = segment.split(":", 1)
+        name = _clean_locator_value(raw_name)
+        if not name or name.startswith("<"):
+            continue
+        names.append(name)
+
+    if not names:
+        return {}
+
+    selector: dict[str, Any] = {"name": names[0]}
+    if len(names) > 1:
+        selector["chain"] = [
+            {"method": "child", "name": name}
+            for name in names[1:]
+        ]
+    return selector
+
+
+def _clean_locator_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return ""
+    return " ".join(text.split())
+
+
+def _format_normalized_pair(value: Any) -> str:
+    """把 Poco 的 [x, y] 坐标或尺寸格式化成适合注释阅读的文本。"""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return ""
+    try:
+        first = round(float(value[0]), 4)
+        second = round(float(value[1]), 4)
+    except (TypeError, ValueError):
+        return ""
+    return f"[{first}, {second}]"
+
+
+def _node_label(node: dict[str, Any]) -> str:
+    # 生成 YAML 的 name 时，优先用玩家能看懂的显示文本。
+    # 如果节点没有 text，再退回 Poco 内部节点名。
+    for key in ("text", "name", "desc", "resourceId"):
+        value = _clean_locator_value(node.get(key))
+        if value:
+            return value[:40]
+    selector = _build_selector_from_path(node.get("path"))
+    return str(selector.get("name") or "Poco节点")
+
+
+def _selector_identity(selector: Any) -> str:
+    if not isinstance(selector, dict) or not selector:
+        return ""
+    return json.dumps(selector, ensure_ascii=False, sort_keys=True)
 
 
 def write_poco_nodes_field_guide(nodes_json_path: Path) -> Path:
@@ -134,7 +407,8 @@ _POCO_NODES_FIELD_GUIDE = """# Poco 节点字段说明
 
 ## 哪些字段可以写进 YAML selector
 
-优先级建议：`resourceId` > `desc` > `text` > `name/type + index`。
+游戏内 Cocos UI 优先级建议：`name + chain` > `text` > `type + index`。
+如果通过 `POCO_DRIVER=android` 临时查看 Android 原生控件，再优先考虑 `resourceId` / `desc`。
 
 ### `text`
 
@@ -181,6 +455,31 @@ selector:
 
 如果只是 `android.view.View`、`android.widget.FrameLayout` 这类通用名字，不建议单独使用。
 
+### `chain`
+
+游戏节点经常需要按层级定位，例如 `poco("footer").child("screentouch_node").child("spin_bg")`。
+可以写成：
+
+```yaml
+selector:
+  name: "footer"
+  chain:
+    - method: "child"
+      name: "screentouch_node"
+    - method: "child"
+      name: "spin_bg"
+```
+
+也兼容更短的二元列表写法：
+
+```yaml
+selector:
+  name: "footer"
+  chain:
+    - ["child", "screentouch_node"]
+    - ["child", "spin_bg"]
+```
+
 ### `type`
 
 控件类型，例如 `android.widget.EditText`、`android.widget.Button`。
@@ -220,11 +519,7 @@ selector:
 
 ### `pos`
 
-节点中心点坐标，范围是 `0 ~ 1`。不能写进 `selector`，但可以作为坐标兜底：
-
-```yaml
-fallback_pos: [0.5, 0.0377]
-```
+节点中心点坐标，范围是 `0 ~ 1`。当前只作为人工核对信息，不写入执行 YAML。
 
 ### `size`
 
@@ -264,18 +559,22 @@ fallback_pos: [0.5, 0.0377]
 - name: "【操作】点击目标按钮"
   action: "click"
   selector:
-    resourceId: "com.xxx:id/btn_target"
-  fallback_pos: [0.62, 0.84]
+    name: "footer"
+    chain:
+      - method: "child"
+        name: "screentouch_node"
+      - method: "child"
+        name: "spin_bg"
   sleep_after: 1
   snapshot_after: true
 ```
 
-如果节点树里没有稳定的 `resourceId/desc/text/name`，先用 `fallback_pos`，并保留 `poco_nodes.json` 和 `screen.png` 继续分析。
+如果节点树里没有稳定的 `resourceId/desc/text/name`，保留 `poco_nodes.json` 和 `screen.png` 继续分析，先补出可用 Poco selector 再执行。
 """
 
 
 def execute_steps(
-    poco: AndroidUiautomationPoco,
+    poco: Any,
     steps: list[dict[str, Any]],
     snapshot_dir: Path,
     module_name: str = "",
@@ -283,6 +582,15 @@ def execute_steps(
     """
     【业务流执行函数】按照配置文件里的步骤，一个一个去执行。
     这是整个脚本的“指挥部”。
+
+    对新手来说，YAML 里的每一项 step 都会来到这里：
+    - `sleep`：什么也不点，只等待几秒；
+    - `click`：必须先通过 selector 找到 Poco 节点，再点击；
+    - `snapshot`：不点击，只截图留证；
+    - `wait` / `assert_exists`：确认某个 Poco 节点能出现。
+
+    当前项目故意不支持坐标点击。
+    如果 click 找不到 selector，直接报错，比“点错位置但继续截图”更安全。
     
     参数:
         poco: Poco 驱动实例
@@ -303,10 +611,29 @@ def execute_steps(
         selector = step.get("selector", {})      # 怎么找到目标控件
         _record_step_context(index=index, total_steps=total_steps, action=action, name=name)
         
-        # 如果配置了 selector，就尝试在屏幕上定位这个控件
-        target = resolve_target(poco, selector) if selector else None
+        # 如果配置了 selector，就尝试在屏幕上定位这个控件。
+        # 对 click / wait / assert_exists 来说，selector 是必需的；
+        # 对 sleep / snapshot 来说，可以没有 selector。
+        #
+        # 注意：带 index 的 selector 可能在 resolve_target 阶段就触发 Poco 查询。
+        # 如果此时页面上没有目标节点，Poco 会直接抛异常；所以这里必须提前捕获，
+        # 否则后面的“保存失败现场”逻辑来不及执行。
+        try:
+            target = resolve_target(poco, selector) if selector else None
+        except Exception as exc:
+            if action in {"click", "wait", "assert_exists"}:
+                failure_dir = _dump_selector_failure_context(
+                    poco=poco,
+                    snapshot_dir=snapshot_dir,
+                    step_index=index,
+                    step_name=name,
+                )
+                raise ValueError(
+                    f"{name}: Poco selector 解析或查询失败，请检查当前页面是否存在该节点。"
+                    f"失败现场已保存到: {failure_dir.resolve()}"
+                ) from exc
+            raise
         locate_method = "not_required"
-        fallback_used = False
 
         # --- 逻辑分支判断：根据 action 决定做什么 ---
         
@@ -323,27 +650,23 @@ def execute_steps(
             # 点击操作
             click_order += 1
             if target and target.exists():
-                # 情况 1: 找到了控件，直接点它
+                # 找到了 Poco 节点，才允许点击。
+                # 这里不做坐标兜底，是为了避免页面错了还继续乱点。
                 timeout = float(step.get("timeout", 15))
                 target.wait_for_appearance(timeout=timeout)
                 _click_poco_target(target, step)
                 locate_method = "poco"
-            elif "fallback_pos" in step:
-                # 情况 2: 没找到控件（可能是游戏贴图），但配置了备用坐标
-                x, y = step["fallback_pos"]
-                # 使用 Airtest 的 touch 命令点击百分比坐标 [0-1]
-                touch((x, y))
-                locate_method = "fallback_pos"
-                fallback_used = True
-                _record_locator_context(
-                    index=index,
-                    name=name,
-                    locate_method=locate_method,
-                    selector=selector,
-                )
             else:
-                # 既没控件又没坐标，报错提示
-                raise ValueError(f"{name}: click 动作未通过 Poco 找到控件，也没有配置 fallback_pos 坐标")
+                failure_dir = _dump_selector_failure_context(
+                    poco=poco,
+                    snapshot_dir=snapshot_dir,
+                    step_index=index,
+                    step_name=name,
+                )
+                raise ValueError(
+                    f"{name}: click 动作未通过 Poco 找到控件，请检查 selector。"
+                    f"失败现场已保存到: {failure_dir.resolve()}"
+                )
                 
         elif action == "snapshot":
             # 主动执行一张截图。
@@ -365,7 +688,6 @@ def execute_steps(
                     image_name=filename,
                     image_path=snapshot_dir / filename,
                     locate_method=locate_method,
-                    fallback_used=False,
                     click_order=None,
                     selector=selector,
                 )
@@ -412,13 +734,49 @@ def execute_steps(
                     image_name=snapshot_name,
                     image_path=snapshot_dir / snapshot_name,
                     locate_method=locate_method,
-                    fallback_used=fallback_used,
                     click_order=click_order if action == "click" else None,
                     selector=selector,
                 )
             )
 
     return snapshot_records
+
+
+def _dump_selector_failure_context(
+    *,
+    poco: Any,
+    snapshot_dir: Path,
+    step_index: int,
+    step_name: str,
+) -> Path:
+    """
+    selector 找不到时，立即把失败现场保存下来。
+
+    这样不用靠猜：
+    - `screen.png` 能看到失败时游戏停在哪个页面；
+    - `nodes.json` 是失败时真实 Poco 节点树；
+    - `nodes_steps.yaml` 是失败现场可直接复制的 name + chain 步骤。
+    """
+    failure_dir = snapshot_dir.parent / "selector_failure" / f"{step_index:02d}_{_sanitize_debug_name(step_name)}"
+    failure_dir.mkdir(parents=True, exist_ok=True)
+    nodes_path = failure_dir / "nodes.json"
+    screen_path = failure_dir / "screen.png"
+    try:
+        _ = dump_visible_nodes(poco, nodes_path)
+    except Exception as exc:
+        (failure_dir / "dump_nodes_error.txt").write_text(str(exc), encoding="utf-8")
+    try:
+        _capture_landscape_snapshot(screen_path, f"selector 失败现场：{step_name}")
+    except Exception as exc:
+        (failure_dir / "snapshot_error.txt").write_text(str(exc), encoding="utf-8")
+    print(f"已保存 selector 失败现场: {failure_dir.resolve()}")
+    return failure_dir
+
+
+def _sanitize_debug_name(name: str) -> str:
+    """把步骤名变成适合目录名的短文本。"""
+    sanitized = re.sub(r"[\\/:*?\"<>|\s]+", "_", str(name)).strip("_")
+    return sanitized[:80] or "step"
 
 
 def _click_poco_target(target: Any, step: dict[str, Any]) -> None:
@@ -441,7 +799,6 @@ def _build_snapshot_record(
     image_name: str,
     image_path: Path,
     locate_method: str,
-    fallback_used: bool,
     click_order: int | None,
     selector: dict[str, Any],
 ) -> dict[str, Any]:
@@ -454,7 +811,6 @@ def _build_snapshot_record(
         "image_name": image_name,
         "image_path": str(image_path.resolve()),
         "locate_method": locate_method,
-        "fallback_used": fallback_used,
         "selector": _selector_summary(selector),
     }
     if click_order is not None:
@@ -492,23 +848,43 @@ def _selector_summary(selector: dict[str, Any]) -> str:
     safe_selector = {
         key: value
         for key, value in selector.items()
-        if key in {"name", "text", "text_matches", "type", "resourceId", "resource_id", "desc", "name_matches", "index"}
+        if key in {
+            "name",
+            "text",
+            "text_matches",
+            "type",
+            "resourceId",
+            "resource_id",
+            "desc",
+            "name_matches",
+            "index",
+            "chain",
+        }
     }
     return json.dumps(safe_selector, ensure_ascii=False, sort_keys=True)
 
 
 def _build_ordered_snapshot_filename(index: int, raw_filename: str) -> str:
     """
-    为截图文件名补一个固定宽度的步骤序号前缀。
+    生成截图文件名。
 
-    这样无论是在日志目录里按文件名看，还是在某些按文件名展示的面板里看，
-    截图顺序都会稳定对齐到实际执行顺序。
+    当前按用户要求，截图文件名直接使用 YAML 中的步骤 name。
+    `index` 参数保留在函数签名里，是为了调用处不用跟着大改。
     """
+    _ = index
     path = Path(raw_filename)
-    prefix = f"{index:02d}_"
-    if re.match(r"^\d{2}_", path.name):
-        return path.name
-    return f"{prefix}{path.name}"
+    return _sanitize_snapshot_filename(path.name)
+
+
+def _sanitize_snapshot_filename(file_name: str) -> str:
+    """把 YAML name 转成安全的 PNG 文件名。"""
+    sanitized = re.sub(r"[\\/:*?\"<>|\t\r\n]+", "_", str(file_name)).strip()
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    if not sanitized:
+        sanitized = "snapshot.png"
+    if not sanitized.lower().endswith(".png"):
+        sanitized = f"{sanitized}.png"
+    return sanitized
 
 
 def _capture_landscape_snapshot(image_path: Path, message: str) -> None:
@@ -564,7 +940,7 @@ def _record_step_context(index: int, total_steps: int, action: str, name: str) -
 
 
 def resolve_target(
-    poco: AndroidUiautomationPoco,
+    poco: Any,
     selector: dict[str, Any],
 ):
     """
@@ -601,10 +977,77 @@ def resolve_target(
         parent_target = resolve_target(poco, parent)
         target = parent_target.offspring(name, **attrs)
 
+    target = _apply_selector_chain(target, selector.get("chain"), "selector.chain")
+
     if "index" in selector:
         target = target[int(selector["index"])]
 
     return target
+
+
+def _apply_selector_chain(target: Any, chain: Any, prefix: str) -> Any:
+    """按 YAML chain 继续解析 child/offspring/index 链路。"""
+    if not chain:
+        return target
+    if not isinstance(chain, list):
+        raise ValueError(f"{prefix} 必须是列表。")
+
+    current = target
+    for index, item in enumerate(chain):
+        item_prefix = f"{prefix}[{index}]"
+        if isinstance(item, dict):
+            method = str(item.get("method") or "").strip()
+            if method == "index":
+                current = current[_read_non_negative_index(item.get("index"), item_prefix)]
+                continue
+            if method not in {"child", "offspring"}:
+                raise ValueError(f"{item_prefix}.method 只支持 child / offspring / index。")
+            name = str(item.get("name") or "").strip()
+            chain_attrs = _selector_attrs(item)
+            current = getattr(current, method)(name, **chain_attrs)
+            if "index" in item:
+                current = current[_read_non_negative_index(item.get("index"), item_prefix)]
+            continue
+
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            method, value = item
+            method = str(method).strip()
+            if method in {"child", "offspring"}:
+                current = getattr(current, method)(str(value))
+            elif method == "index":
+                current = current[_read_non_negative_index(value, item_prefix)]
+            else:
+                raise ValueError(f"{item_prefix}.method 只支持 child / offspring / index。")
+            continue
+
+        raise ValueError(f"{item_prefix} 必须是对象，或 [method, value] 二元列表。")
+    return current
+
+
+def _selector_attrs(selector: dict[str, Any]) -> dict[str, Any]:
+    """把 YAML selector 字段转换成 Poco 查询属性。"""
+    attrs: dict[str, Any] = {}
+    if selector.get("text"):
+        attrs["text"] = selector["text"]
+    if selector.get("text_matches"):
+        attrs["textMatches"] = selector["text_matches"]
+    if selector.get("type"):
+        attrs["type"] = selector["type"]
+    if selector.get("resourceId"):
+        attrs["resourceId"] = selector["resourceId"]
+    if selector.get("resource_id"):
+        attrs["resourceId"] = selector["resource_id"]
+    if selector.get("desc"):
+        attrs["desc"] = selector["desc"]
+    if selector.get("name_matches"):
+        attrs["nameMatches"] = selector["name_matches"]
+    return attrs
+
+
+def _read_non_negative_index(value: Any, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field_name}.index 必须是大于等于 0 的整数。")
+    return value
 
 
 def load_steps(flow_path: Path) -> dict[str, Any]:
@@ -645,6 +1088,24 @@ def _validate_step(step: dict[str, Any], index: int) -> list[str]:
     name = str(step.get("name") or f"第 {index} 步")
     action = step.get("action")
     supported_actions = {"sleep", "click", "snapshot", "wait", "assert_exists"}
+    supported_step_keys = {
+        "name",
+        "action",
+        "selector",
+        "relative_pos",
+        "sleep_after",
+        "snapshot_after",
+        "snapshot_delay_seconds",
+        "timeout",
+        "seconds",
+        "message",
+        "filename",
+        "snapshot_name",
+        "snapshot_message",
+    }
+    unknown_step_keys = sorted(set(step) - supported_step_keys)
+    if unknown_step_keys:
+        errors.append(f"{name}: 包含暂不支持的字段 {unknown_step_keys}，请检查是否少缩进到 selector 下面。")
 
     if not isinstance(action, str) or not action.strip():
         errors.append(f"{name}: 缺少 action。")
@@ -661,15 +1122,13 @@ def _validate_step(step: dict[str, Any], index: int) -> list[str]:
     elif isinstance(selector, dict):
         errors.extend(_validate_selector(selector, f"{name}.selector"))
 
-    if action == "click" and not selector and "fallback_pos" not in step:
-        errors.append(f"{name}: click 必须配置 selector 或 fallback_pos。")
+    if action == "click" and not selector:
+        errors.append(f"{name}: click 必须配置 Poco selector。")
     if action in {"wait", "assert_exists"} and not selector:
         errors.append(f"{name}: {action} 必须配置 selector。")
     if action == "sleep":
         errors.extend(_validate_non_negative_number(step.get("seconds", 1), f"{name}.seconds"))
 
-    if "fallback_pos" in step:
-        errors.extend(_validate_normalized_point(step.get("fallback_pos"), f"{name}.fallback_pos"))
     if "relative_pos" in step:
         errors.extend(_validate_normalized_point(step.get("relative_pos"), f"{name}.relative_pos"))
     if "sleep_after" in step:
@@ -699,6 +1158,7 @@ def _validate_selector(selector: dict[str, Any], prefix: str) -> list[str]:
         "name_matches",
         "index",
         "parent",
+        "chain",
     }
     unknown_keys = sorted(set(selector) - supported_keys)
     if unknown_keys:
@@ -713,6 +1173,50 @@ def _validate_selector(selector: dict[str, Any], prefix: str) -> list[str]:
             errors.append(f"{prefix}.parent 必须是对象。")
         else:
             errors.extend(_validate_selector(parent, f"{prefix}.parent"))
+    if "chain" in selector:
+        errors.extend(_validate_selector_chain(selector.get("chain"), f"{prefix}.chain"))
+    return errors
+
+
+def _validate_selector_chain(chain: Any, prefix: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(chain, list):
+        return [f"{prefix} 必须是列表。"]
+    supported_methods = {"child", "offspring", "index"}
+    for index, item in enumerate(chain):
+        item_prefix = f"{prefix}[{index}]"
+        if isinstance(item, dict):
+            method = item.get("method")
+            if method not in supported_methods:
+                errors.append(f"{item_prefix}.method 只支持 {sorted(supported_methods)}。")
+                continue
+            if method in {"child", "offspring"}:
+                child_name = item.get("name")
+                has_attr = any(
+                    item.get(key)
+                    for key in ("text", "text_matches", "type", "resourceId", "resource_id", "desc", "name_matches")
+                )
+                if not isinstance(child_name, str) and not has_attr:
+                    errors.append(f"{item_prefix}.name 必须是字符串，或提供 text/type/desc 等查询属性。")
+            if method == "index" and "index" not in item:
+                errors.append(f"{item_prefix}.index 必须配置。")
+            if "index" in item:
+                index_value = item.get("index")
+                if not isinstance(index_value, int) or isinstance(index_value, bool) or index_value < 0:
+                    errors.append(f"{item_prefix}.index 必须是大于等于 0 的整数。")
+            continue
+
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            method, value = item
+            if method not in supported_methods:
+                errors.append(f"{item_prefix}[0] 只支持 {sorted(supported_methods)}。")
+            if method in {"child", "offspring"} and not isinstance(value, str):
+                errors.append(f"{item_prefix}[1] 必须是节点名字符串。")
+            if method == "index" and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+                errors.append(f"{item_prefix}[1] 必须是大于等于 0 的整数。")
+            continue
+
+        errors.append(f"{item_prefix} 必须是对象，或 [method, value] 二元列表。")
     return errors
 
 

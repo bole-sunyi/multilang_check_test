@@ -12,11 +12,11 @@ Poco 页面采集小工具。
 import argparse
 from pathlib import Path
 
-from airtest.core.api import auto_setup, snapshot
+from airtest.core.api import auto_setup, device, snapshot
 from airtest.core.settings import Settings as ST
 
 from .paths import get_poco_inspect_dir
-from .poco_utils import build_android_poco, dump_visible_nodes, write_poco_nodes_field_guide
+from .poco_utils import build_poco, dump_visible_nodes
 from .screenshot_utils import normalize_image_file_for_landscape
 
 
@@ -53,10 +53,11 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 初始化 Poco，并把当前可见节点全部导出成 JSON。
-    poco = build_android_poco()
+    poco = build_poco(device())
     nodes_path = output_dir / "poco_nodes.json"
     _ = dump_visible_nodes(poco, nodes_path)
-    guide_path = write_poco_nodes_field_guide(nodes_path)
+    guide_path = nodes_path.with_name(f"{nodes_path.stem}字段说明.md")
+    yaml_path = nodes_path.with_name(f"{nodes_path.stem}_steps.yaml")
 
     # 再补一张当前页面截图，方便你把 JSON 节点和真实界面对照查看。
     screen_path = output_dir / "screen.png"
@@ -64,6 +65,7 @@ def main() -> int:
     _ = normalize_image_file_for_landscape(screen_path)
     print(f"已导出 Poco 控件树：{nodes_path}")
     print(f"已导出字段说明：{guide_path}")
+    print(f"已导出可执行 YAML 片段：{yaml_path}")
     print(f"已导出页面截图：{screen_path}")
     return 0
 

@@ -135,11 +135,9 @@ def _snapshot_records(value: object) -> list[dict[str, object]]:
 
 
 def _snapshot_display_name(record: Mapping[str, object]) -> str:
-    step_index = record.get("step_index")
     step_name = _str_value(record.get("step_name"))
     image_name = _str_value(record.get("image_name"))
-    if isinstance(step_index, int) and step_name:
-        return f"{step_index:02d}_{step_name}"
+    # 报告中的截图名称直接使用 YAML 中的 name，和 Excel、截图文件名保持一致。
     return step_name or image_name or "unknown"
 
 
@@ -379,17 +377,12 @@ def render_markdown(summary: ReportSummary) -> str:
         records = _snapshot_records(item.get("snapshot_records"))
         if not records:
             continue
-        fallback_records = [record for record in records if _bool_value(record.get("fallback_used"))]
         excel_path = _str_value(item.get("excel_path"))
         snapshot_lines.append(
             f"- 设备 `{_str_value(item.get('device_name'))}` / 用例 `{_str_value(item.get('case_name'))}` / "
-            + f"截图 `{len(records)}` 张 / fallback_pos `{len(fallback_records)}` 次"
+            + f"截图 `{len(records)}` 张"
             + (f" / 表格 `{excel_path}`" if excel_path else "")
         )
-        for record in fallback_records:
-            snapshot_lines.append(
-                f"  - 需优化定位：`{_snapshot_display_name(record)}` / 图片 `{Path(_str_value(record.get('image_path'))).name}`"
-            )
     if not snapshot_lines:
         snapshot_lines = ["无"]
 
@@ -494,12 +487,10 @@ def render_html(summary: ReportSummary) -> str:
             if not diff.get("passed", False)
         ) or "<li>无</li>"
         snapshot_records = _snapshot_records(item.get("snapshot_records"))
-        fallback_count = sum(1 for record in snapshot_records if _bool_value(record.get("fallback_used")))
         snapshot_html = "".join(
             (
                 "<li>"
                 + f"{escape(_snapshot_display_name(record))} / 定位 {escape(record.get('locate_method', 'unknown'))}"
-                + (" / <strong class='risk'>fallback_pos</strong>" if _bool_value(record.get("fallback_used")) else "")
                 + f" / {path_to_link(_str_value(record.get('image_path')))}"
                 + "</li>"
             )
@@ -510,7 +501,7 @@ def render_html(summary: ReportSummary) -> str:
                 "<div class='case-card'>"
                 + f"<h3>{escape(_str_value(item.get('device_name')))} / {escape(_str_value(item.get('case_name')))}</h3>"
                 + f"<p>状态：<strong>{escape(_str_value(item.get('status')))}</strong>，重试次数：{escape(item.get('attempt_count', 1))}</p>"
-                + f"<p>截图：{escape(len(snapshot_records))} 张，fallback_pos：<strong>{escape(fallback_count)}</strong> 次，表格：{path_to_link(_str_value(item.get('excel_path')))}</p>"
+                + f"<p>截图：{escape(len(snapshot_records))} 张，表格：{path_to_link(_str_value(item.get('excel_path')))}</p>"
                 + f"<p>基线动作：{escape(item.get('baseline_action', 'skipped'))}</p>"
                 + f"<p>日志目录：{path_to_link(item.get('log_dir', ''))}</p>"
                 + "<h4>尝试明细</h4>"

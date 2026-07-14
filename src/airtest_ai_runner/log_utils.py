@@ -7,7 +7,7 @@ Airtest 日志清洗工具。
 原始 `log.txt` 对机器来说够用，但对新人阅读并不友好：
 1. 会混入大量框架内部动作；
 2. 业务步骤和真实截图文件名不容易直接对上；
-3. 出问题时，常常要手工猜某次 touch 到底对应哪一步。
+3. 出问题时，常常要手工猜某条截图日志到底对应哪一步。
 
 这个模块的目标就是把原始日志整理成“更像业务流水账”的格式。
 """
@@ -37,13 +37,11 @@ def sanitize_airtest_log(log_file: Path) -> dict[str, int]:
             "removed_try_log_screen": 0,
             "normalized_snapshot_ret": 0,
             "annotated_records": 0,
-            "fallback_annotated_touches": 0,
         }
 
     removed_try_log_screen = 0
     normalized_snapshot_ret = 0
     annotated_records = 0
-    fallback_annotated_touches = 0
     parsed_items: list[dict[str, Any] | str] = []
     current_step_context: dict[str, Any] | None = None
 
@@ -90,8 +88,6 @@ def sanitize_airtest_log(log_file: Path) -> dict[str, int]:
 
         parsed_items.append(record)
 
-    fallback_annotated_touches = _apply_snapshot_fallback_annotations(parsed_items)
-
     cleaned_lines: list[str] = []
     for item in parsed_items:
         if isinstance(item, str):
@@ -108,7 +104,6 @@ def sanitize_airtest_log(log_file: Path) -> dict[str, int]:
         "removed_try_log_screen": removed_try_log_screen,
         "normalized_snapshot_ret": normalized_snapshot_ret,
         "annotated_records": annotated_records,
-        "fallback_annotated_touches": fallback_annotated_touches,
     }
 
 
@@ -174,78 +169,3 @@ def _attach_friendly_log(data: dict[str, Any]) -> None:
         data["friendly_log"] = step_label
 
 
-def _apply_snapshot_fallback_annotations(parsed_items: list[dict[str, Any] | str]) -> int:
-    """
-    兜底补全旧日志。
-
-    对于历史日志，它们还没有 STEP_CONTEXT 记录。
-    这时如果发现 snapshot 紧跟在 touch 后面，就用 snapshot 文件名反推这次 touch 属于哪一步。
-    """
-    fallback_annotated_touches = 0
-
-    for index, item in enumerate(parsed_items):
-        if not isinstance(item, dict):
-            continue
-        if item.get("tag") != "function":
-            continue
-
-        data = item.get("data", {})
-        if data.get("name") != "snapshot":
-            continue
-
-        step_name = _extract_snapshot_step_name(data)
-        if not step_name:
-            continue
-
-        if not data.get("step_name"):
-            data["step_name"] = step_name
-            data["step_action"] = "snapshot"
-            data["step_label"] = f"步骤 | snapshot | {step_name}"
-            _attach_friendly_log(data)
-
-        previous_touch = _find_previous_touch_record(parsed_items, index)
-        if previous_touch is None:
-            continue
-
-        touch_data = previous_touch.get("data", {})
-        if touch_data.get("step_name"):
-            continue
-
-        touch_data["step_name"] = step_name
-        touch_data["step_action"] = "click"
-        touch_data["step_label"] = f"步骤 | click | {step_name}"
-        _attach_friendly_log(touch_data)
-        fallback_annotated_touches += 1
-
-    return fallback_annotated_touches
-
-
-def _extract_snapshot_step_name(data: dict[str, Any]) -> str:
-    """从 snapshot 记录中提取业务步骤名。"""
-    call_args = data.get("call_args", {})
-    filename = call_args.get("filename")
-    if isinstance(filename, str) and filename.strip():
-        return Path(filename).stem
-    msg = call_args.get("msg")
-    if isinstance(msg, str):
-        return msg.strip()
-    return ""
-
-
-def _find_previous_touch_record(
-    parsed_items: list[dict[str, Any] | str],
-    snapshot_index: int,
-) -> dict[str, Any] | None:
-    """向前找离当前 snapshot 最近的一条 touch 记录。"""
-    for cursor in range(snapshot_index - 1, -1, -1):
-        item = parsed_items[cursor]
-        if not isinstance(item, dict):
-            continue
-        if item.get("tag") != "function":
-            continue
-        action_name = item.get("data", {}).get("name")
-        if action_name == "snapshot":
-            return None
-        if action_name == "touch":
-            return item
-    return None

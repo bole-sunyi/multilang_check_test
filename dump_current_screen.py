@@ -7,7 +7,13 @@
 # 适合场景：
 # 1. 你已经手动把游戏切到某个目标页面；
 # 2. 你不想执行任何点击，只想把当前页面截图和节点树导出来；
-# 3. 你想对照 screen.png 和 nodes.json 判断 Poco 看到了什么。
+# 3. 你想对照 screen.png 和 nodes.json 判断 Poco 看到了什么；
+# 4. 你想直接拿到可复制进 config/*.yaml 的 nodes_steps.yaml。
+#
+# 新手优先看 nodes_steps.yaml：
+# - nodes.json 是完整原始数据，适合排查，但内容很多；
+# - nodes_steps.yaml 已经帮你整理成 `name + chain` 点击步骤；
+# - 复制 nodes_steps.yaml 里的步骤到模块 YAML 后，通常只需要改 name。
 # ---------------------------------------------------------------
 import sys
 import os
@@ -19,9 +25,9 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from airtest.core.api import auto_setup, snapshot
+from airtest.core.api import auto_setup, device, snapshot
 from airtest_ai_runner.device_utils import build_android_device_uri, select_android_device_serial
-from airtest_ai_runner.poco_utils import build_android_poco, dump_visible_nodes, write_poco_nodes_field_guide
+from airtest_ai_runner.poco_utils import build_poco, dump_visible_nodes
 from airtest_ai_runner.paths import get_current_dump_dir
 from airtest_ai_runner.screenshot_utils import normalize_image_file_for_landscape
 
@@ -48,7 +54,7 @@ def dump_now():
     # 2. 初始化 Poco 引擎
     # Poco 负责读取页面上的控件结构，相当于“把屏幕翻译成可分析的数据”。
     print("正在初始化 Poco 引擎...")
-    poco = build_android_poco()
+    poco = build_poco(device())
 
     # 3. 设置输出目录
     # 采集结果会放在下载目录的 artifacts/current_dump/ 文件夹下，
@@ -56,15 +62,21 @@ def dump_now():
     output_dir = get_current_dump_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. 采集节点树
-    # 这里会把当前页面所有能看到的 Poco 节点都写到 JSON 文件里。
+    # 4. 采集节点树。
+    # dump_visible_nodes 会一次生成 3 类文件：
+    # - nodes.json：完整节点清单，适合搜索和排查；
+    # - nodes字段说明.md：解释 JSON 每个字段什么意思；
+    # - nodes_steps.yaml：把节点路径转换成可复制执行的 name + chain 步骤。
     print("正在抓取当前页面控件树 (Poco Tree)...")
     json_path = output_dir / "nodes.json"
     _ = dump_visible_nodes(poco, json_path)
-    guide_path = write_poco_nodes_field_guide(json_path)
+    guide_path = json_path.with_name(f"{json_path.stem}字段说明.md")
+    yaml_path = json_path.with_name(f"{json_path.stem}_steps.yaml")
 
-    # 5. 同时截一张图，方便对照
-    # 以后你可以一边看 screen.png，一边在 nodes.json 里搜索文字或坐标。
+    # 5. 同时截一张图，方便对照。
+    # 建议新手同时打开 screen.png 和 nodes_steps.yaml：
+    # - screen.png 用来确认当前页面是不是你想采集的页面；
+    # - nodes_steps.yaml 用来挑选要复制的 Poco selector。
     img_path = output_dir / "screen.png"
     _ = snapshot(filename=str(img_path), msg="手动即时采集")
     _ = normalize_image_file_for_landscape(img_path)
@@ -73,9 +85,11 @@ def dump_now():
     print("【采集成功！】")
     print(f"1. 节点清单 (JSON): {json_path.absolute()}")
     print(f"2. 字段说明 (MD):   {guide_path.absolute()}")
-    print(f"3. 当前截图 (PNG):  {img_path.absolute()}")
+    print(f"3. 可执行片段 (YAML): {yaml_path.absolute()}")
+    print(f"4. 当前截图 (PNG):  {img_path.absolute()}")
     print("="*50)
-    print("提示：你可以打开 nodes.json 搜索你在图中看到的文字，找到对应的坐标。")
+    print("提示：优先打开 nodes_steps.yaml，挑选目标节点后复制到模块配置的 steps 下。")
+    print("提示：模块执行前会让你选择清理旧产物；如果你删除了 current_dump，需要重新运行本工具。")
 
 
 if __name__ == "__main__":

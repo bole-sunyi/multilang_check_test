@@ -3,9 +3,13 @@
 # 【脚本用途】
 # 这是“鼠标悬停看坐标”工具。
 #
-# 它的核心作用不是自动点击，而是帮你做两件事：
+# 它的核心作用不是自动点击，也不是生成可执行 YAML。
+# 它只帮你做两件事：
 # 1. 在截图上肉眼找按钮时，实时看到当前位置的 0-1 坐标；
-# 2. 如果 Poco 能识别该位置的节点，还会顺手告诉你节点名称和文本。
+# 2. 如果 Poco 能识别该位置的节点，会顺手告诉你节点名称和文本。
+#
+# 当前项目执行时只使用 dump_current_screen.py 生成的 name + chain。
+# 本工具保存的 coordinate_pos 只供人工核对，不建议复制到 config/*.yaml。
 # ---------------------------------------------------------------
 import cv2
 import os
@@ -19,9 +23,9 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from airtest.core.api import auto_setup, snapshot, connect_device
+from airtest.core.api import auto_setup, connect_device, snapshot
 from airtest_ai_runner.device_utils import build_android_device_uri, select_android_device_serial
-from airtest_ai_runner.poco_utils import build_android_poco
+from airtest_ai_runner.poco_utils import build_poco
 from airtest_ai_runner.paths import get_coordinate_capture_dir, get_hover_inspector_dir
 
 
@@ -78,7 +82,12 @@ def get_node_at(x_norm, y_norm):
 
 
 def save_hover_coordinate_yaml() -> None:
-    """把鼠标点击确认过的坐标保存到项目内 YAML。"""
+    """
+    把鼠标点击确认过的位置保存到项目内 YAML。
+
+    注意：这里保存的是 `coordinate_pos`，只是辅助观察用。
+    模块执行配置仍然应该使用 Poco selector，不应该使用这些坐标。
+    """
     if hover_yaml_path is None or latest_hover_yaml_path is None:
         return
     lines = [
@@ -118,11 +127,11 @@ def update_hover_info(x, y):
     cv2.line(temp_img, (0, y), (w, y), (0, 255, 0), 1)
     cv2.line(temp_img, (x, 0), (x, h), (0, 255, 0), 1)
 
-    fallback_pos = [round(x_norm, 3), round(y_norm, 3)]
+    coordinate_pos = [round(x_norm, 3), round(y_norm, 3)]
     current_hover_info = {
-        "fallback_pos": fallback_pos,
-        "fallback_pos_text": f"[{fallback_pos[0]}, {fallback_pos[1]}]",
-        "yaml_line": f"fallback_pos: [{fallback_pos[0]}, {fallback_pos[1]}]",
+        "coordinate_pos": coordinate_pos,
+        "coordinate_pos_text": f"[{coordinate_pos[0]}, {coordinate_pos[1]}]",
+        "yaml_line": f"coordinate_pos: [{coordinate_pos[0]}, {coordinate_pos[1]}]",
         "pixel": [int(x), int(y)],
         "node": None,
     }
@@ -184,9 +193,14 @@ def start_inspector():
     # 1. 连接设备
     # 这里先连接模拟器，再初始化 Airtest，确保后续截图和 Poco 读取都能正常工作。
     print("正在连接设备并截取当前画面...")
-    selected_serial = select_android_device_serial(adb_host=ADB_HOST)
+    # 和 dump_current_screen.py 保持一致：
+    # - 如果用户传了 DEVICE_SERIAL，就优先使用指定设备；
+    # - 如果命令行第一个参数是设备号，也优先使用；
+    # - 都没传时，再自动发现设备并在多设备时让用户选择。
+    preferred_serial = os.environ.get("DEVICE_SERIAL", sys.argv[1] if len(sys.argv) > 1 else "").strip()
+    selected_serial = select_android_device_serial(adb_host=ADB_HOST, preferred_serial=preferred_serial)
     device_uri = build_android_device_uri(ADB_HOST, ADB_PORT, selected_serial)
-    connect_device(device_uri)
+    dev = connect_device(device_uri)
     auto_setup(__file__, devices=[device_uri])
 
     session_started_at = datetime.now().isoformat(timespec="seconds")
@@ -199,7 +213,7 @@ def start_inspector():
     # 2. 采集数据
     # 这里直接读取 Poco 的原始层级树，再手工摊平成一维列表。
     # 这样鼠标每移动一次时，只需要在列表里查，不需要反复递归整棵树。
-    poco = build_android_poco()
+    poco = build_poco(dev)
     # 递归采集所有节点
     raw_dump = poco.agent.hierarchy.dump()
 

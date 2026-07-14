@@ -32,7 +32,6 @@ class ClickSnapshotRecord(TypedDict, total=False):
     image_name: str
     image_path: str
     locate_method: str
-    fallback_used: bool
 
 
 class _AnchorMarkerLike(Protocol):
@@ -113,7 +112,7 @@ def export_module_screenshots_to_excel(
     约定：
     1. 从 A 列写步骤/截图名称；
     2. 从 B 列插入对应截图；
-    3. 从 C 列写定位方式，方便判断是否仍有坐标兜底；
+    3. 从 C 列写定位方式，方便确认本次步骤是否通过 Poco 定位；
     4. 默认从第 3 行开始，保留模板已有表头。
     """
     workbook_path = resolve_excel_template_path(workbook_path)
@@ -260,19 +259,15 @@ def _read_record_text(record: ClickSnapshotRecord | Mapping[str, object], key: s
 
 
 def _build_display_name(record: ClickSnapshotRecord | Mapping[str, object]) -> str:
-    step_index = record.get("step_index")
     step_name = _read_record_text(record, "step_name")
     image_name = _read_record_text(record, "image_name")
-    if isinstance(step_index, int) and step_name:
-        return f"{step_index:02d}_{step_name}"
+    # Excel A 列直接展示 YAML 中的 name。
+    # 这样测试同学看到的截图名称、atw_screen 文件名、报告里的截图名称能保持一致。
     return step_name or image_name
 
 
 def _build_locator_text(record: ClickSnapshotRecord | Mapping[str, object]) -> str:
-    locate_method = _read_record_text(record, "locate_method") or "unknown"
-    fallback_used = record.get("fallback_used")
-    suffix = " / fallback_used" if fallback_used is True else ""
-    return f"{locate_method}{suffix}"
+    return _read_record_text(record, "locate_method") or "unknown"
 
 
 def _pixels_to_excel_width(width_px: int) -> float:

@@ -10,8 +10,7 @@
     "src",
     "cases",
     "dump_current_screen.py",
-    "poco_hover_inspector.py",
-    "quick_click.py"
+    "poco_hover_inspector.py"
   ],
   "extraPaths": [
     "src"

@@ -4,7 +4,7 @@ from __future__ import annotations
 单模块多语言截图执行器。
 
 stamp、byd、atw 仍然保持各自独立入口，但启动 App、初始化 Poco、执行 YAML、
-截图、写本地表格、生成报告这些通用流程统一放在这里维护。
+截图、生成钉钉 MCP 待同步数据或本地表格、生成报告这些通用流程统一放在这里维护。
 """
 
 import os
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from airtest.core.api import auto_setup, home, sleep, start_app, stop_app
+    from airtest.core.api import auto_setup, device, home, sleep, start_app, stop_app
 except ImportError:
     import site
     import sys
@@ -23,15 +23,16 @@ except ImportError:
     user_site = site.getusersitepackages()
     if user_site not in sys.path:
         sys.path.insert(0, user_site)
-    from airtest.core.api import auto_setup, home, sleep, start_app, stop_app
+    from airtest.core.api import auto_setup, device, home, sleep, start_app, stop_app
 
 from airtest.core.settings import Settings as ST
 
 from .device_utils import build_android_device_uri, resolve_airtest_devices, select_android_device_serial
+from .dingtalk_export import export_module_screenshots_to_dingtalk
 from .excel_export import export_module_screenshots_to_excel
 from .log_utils import sanitize_airtest_log
-from .paths import clear_artifacts_root, get_module_log_dir, get_run_artifacts_dir
-from .poco_utils import build_android_poco, dump_visible_nodes, execute_steps, load_steps
+from .paths import get_module_log_dir, get_run_artifacts_dir, prompt_cleanup_artifacts_root
+from .poco_utils import build_poco, dump_visible_nodes, execute_steps, load_steps
 from .single_run_report import write_single_case_reports
 
 DEFAULT_ADB_HOST = "127.0.0.1"
@@ -45,14 +46,27 @@ def run_module(
     entry_file: str | Path,
     project_root: Path,
 ) -> int:
-    """执行一个独立多语言截图模块。"""
+    """
+    执行一个独立多语言截图模块。
+
+    新手可以把它理解成一条固定流水线：
+    1. 列出旧产物，让用户选择要删除哪些文件/目录；
+    2. 连接 Android 设备或模拟器；
+    3. 读取 `config/{module_name}.yaml`；
+    4. 启动游戏并等待页面稳定；
+    5. 初始化 Poco，并确认能读取游戏节点树；
+    6. 按 YAML 的 steps 一步步执行；
+    7. 生成钉钉 MCP 待同步数据；如果未开启钉钉导出，则写入本地 Excel；
+    8. 生成 HTML 报告。
+
+    如果你只是想改“点哪里、截哪里”，请改 YAML，不要改这个函数。
+    """
     started_at = datetime.now().isoformat(timespec="seconds")
-    log_dir = get_module_log_dir(module_name)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir: Path | None = None
     status = "failed"
     return_code = 1
     error_text = ""
-    excel_output: str | None = None
+    table_output: str | None = None
     snapshot_records: list[dict[str, Any]] = []
 
     adb_host = os.environ.get("ADB_HOST", DEFAULT_ADB_HOST).strip()
@@ -63,8 +77,14 @@ def run_module(
     try:
         print(f"--- 开始执行模块: {module_name} ---")
 
-        artifacts_root = clear_artifacts_root()
-        print(f"已清空旧产物目录: {artifacts_root}")
+        # 单模块运行前先让用户选择要删除哪些旧产物。
+        # 这样可以保留刚导出的 current_dump，也可以保留历史报告或截图。
+        artifacts_root, deleted_items = prompt_cleanup_artifacts_root()
+        print(f"产物根目录: {artifacts_root}")
+        if deleted_items:
+            print(f"本次已清理 {len(deleted_items)} 个旧产物。")
+        else:
+            print("本次未清理旧产物。")
         log_dir = get_module_log_dir(module_name)
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,6 +100,8 @@ def run_module(
         if not flow_config_path.exists():
             raise FileNotFoundError(f"【找不到配置文件】请先检查是否存在: {flow_config_path.resolve()}")
 
+        # 读取并校验 YAML。配置错误会在这里尽早抛出，
+        # 避免脚本跑到一半才因为 selector 或缩进问题失败。
         flow = load_steps(flow_config_path)
         steps = flow.get("steps", [])
         if not isinstance(steps, list) or not steps:
@@ -91,6 +113,8 @@ def run_module(
         stop_app_after_run = bool(flow.get("stop_app_after_run", False))
         dump_poco_tree = bool(flow.get("dump_poco_tree", True))
         excel_sheet_name = str(flow.get("excel_sheet_name") or _default_sheet_name(module_name))
+        dingtalk_export_config = flow.get("dingtalk_export")
+        use_dingtalk_export = _is_dingtalk_export_enabled(dingtalk_export_config)
 
         log_dir = Path(ST.LOG_DIR or get_module_log_dir(module_name))
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -102,14 +126,18 @@ def run_module(
         sleep(startup_wait_seconds)
 
         print("正在初始化 Poco 控件引擎...")
-        poco = build_android_poco()
+        poco = build_poco(device())
+        _verify_poco_connection(poco)
         snapshot_dir = get_run_artifacts_dir() / f"{_module_short_name(module_name)}_screen"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         if dump_poco_tree:
             poco_nodes_file = log_dir / "poco_nodes.json"
             print(f"正在导出当前页面 Poco 节点树: {poco_nodes_file}")
+            # 运行开始前导出一份节点树，主要用于排查：
+            # 如果某一步点不到，可以回头看启动后的页面节点是否和预期一致。
             dump_visible_nodes(poco, poco_nodes_file)
+            print(f"已同步生成可执行 YAML 片段: {poco_nodes_file.with_name('poco_nodes_steps.yaml')}")
 
         print(f"即将开始执行业务流，共 {len(steps)} 个步骤。")
         snapshot_records = execute_steps(
@@ -119,17 +147,32 @@ def run_module(
             module_name=module_name,
         )
 
-        workbook_path = export_module_screenshots_to_excel(
-            snapshot_records,
-            sheet_name=excel_sheet_name,
-        )
-        workbook_path = _prompt_rename_file(
-            workbook_path,
-            prompt="请输入表格新名称（直接回车保留 多语测试模板.xlsx）: ",
-            suffix=".xlsx",
-        )
-        excel_output = str(workbook_path)
-        print(f"本地多语截图表格已写入: {workbook_path} / sheet={excel_sheet_name}")
+        if use_dingtalk_export:
+            # 方案 2 的 MCP 版本：
+            # 本地脚本不直接调钉钉开放 API，只生成待同步 JSON。
+            # 后续由 Cursor 里的钉钉 MCP 读取这个 JSON 并写入在线表格。
+            if not isinstance(dingtalk_export_config, dict):
+                raise ValueError("dingtalk_export 必须是 YAML 字典结构。")
+            table_output = export_module_screenshots_to_dingtalk(
+                snapshot_records,
+                module_name=module_name,
+                config=dingtalk_export_config,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            print(f"已生成钉钉 MCP 待同步文件: {table_output}")
+            print("下一步：在 Cursor 对话里说“把最新 dingtalk_pending 写入钉钉表格”。")
+        else:
+            workbook_path = export_module_screenshots_to_excel(
+                snapshot_records,
+                sheet_name=excel_sheet_name,
+            )
+            workbook_path = _prompt_rename_file(
+                workbook_path,
+                prompt="请输入表格新名称（直接回车保留 多语测试模板.xlsx）: ",
+                suffix=".xlsx",
+            )
+            table_output = str(workbook_path)
+            print(f"本地多语截图表格已写入: {workbook_path} / sheet={excel_sheet_name}")
 
         if stop_app_after_run:
             stop_app(package_name)
@@ -146,6 +189,8 @@ def run_module(
         error_text = traceback.format_exc()
         raise
     finally:
+        if log_dir is None:
+            log_dir = get_module_log_dir(module_name)
         finished_at = datetime.now().isoformat(timespec="seconds")
         sanitize_airtest_log(log_dir / "log.txt")
         report_json, report_md, report_html = write_single_case_reports(
@@ -157,7 +202,7 @@ def run_module(
             started_at=started_at,
             finished_at=finished_at,
             error_text=error_text,
-            excel_path=excel_output,
+            excel_path=table_output,
             snapshot_records=snapshot_records,
         )
         report_html = _move_report_to_artifacts_root(
@@ -174,6 +219,29 @@ def run_module(
 
 def _default_sheet_name(module_name: str) -> str:
     return _module_short_name(module_name)
+
+
+def _is_dingtalk_export_enabled(config: object) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return bool(config.get("enabled", False))
+
+
+def _verify_poco_connection(poco: Any) -> None:
+    """运行前快速确认游戏 Poco 树可读取，失败时给出明确排查方向。"""
+    try:
+        hierarchy = poco.agent.hierarchy.dump()
+    except Exception as exc:
+        raise RuntimeError(
+            "Poco 控件树读取失败。请确认当前游戏包是 debug/test 包，"
+            "并且已启用 Cocos2d-x Lua Poco SDK 服务（默认监听 15004）。"
+        ) from exc
+
+    root_name = ""
+    if isinstance(hierarchy, dict):
+        payload = hierarchy.get("payload") or {}
+        root_name = str(payload.get("name") or hierarchy.get("name") or "")
+    print(f"Poco 控件树读取成功：root={root_name or 'unknown'}")
 
 
 def _module_short_name(module_name: str) -> str:

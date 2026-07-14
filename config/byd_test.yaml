@@ -1,8 +1,8 @@
 # ==========================================================
 # byd_test 模块业务流配置文件
 # ----------------------------------------------------------
-# 这份文件目前是按项目现有有效流程完整复制出来的模板版本。
-# 如果后面你采到了 byd 模块自己的真实坐标，只需要改 steps 里的坐标即可。
+# 这份文件只使用 Poco selector 执行点击。
+# 当前点击步骤需要先补齐 selector 后再执行完整业务流。
 # ==========================================================
 
 # 1. 基础配置区
@@ -10,15 +10,23 @@ package_name_env: "APP_PACKAGE_NAME"
 startup_wait_seconds: 20              # 启动游戏后额外等待 20 秒，避免资源还没加载完就开始点击
 stop_app_after_run: false             # 跑完后先不关 App，方便你肉眼确认页面状态
 dump_poco_tree: true                  # 每次执行都导出 Poco 控件树，方便排查“为什么点不到”
-excel_sheet_name: "byd"               # 本模块截图写入本地表格的 byd sheet
+excel_sheet_name: "byd"               # 未开启钉钉导出时，才会写入本地 Excel 的 byd sheet
+dingtalk_export:
+  enabled: true                       # 方案 2（Cursor MCP版）：模块执行后生成待同步 JSON，不再生成本地 Excel
+  workbook_id: "https://alidocs.dingtalk.com/i/nodes/dpYLaezmVNLd17qQSPXQzPAq8rMqPxX6?utm_scene=team_space"
+  sheet_id: "kgqie6hm"
 
 # Poco selector 配置模板：
 # - action: "click"
 #   selector:
-#     text: "按钮文字"                  # 或 resourceId / resource_id / desc / name / type
+#     name: "footer"                   # 游戏节点名，优先从 Poco 节点树里复制
+#     chain:                           # 可选：继续按 child/offspring 链路定位
+#       - method: "child"
+#         name: "screentouch_node"
+#       - method: "child"
+#         name: "spin_bg"
 #     index: 0                         # 多个节点同时命中时可指定第几个
 #   relative_pos: [0.5, 0.5]           # 可选：点击控件内部的相对位置
-#   fallback_pos: [0.5, 0.5]           # 仅当 Poco 节点树完全识别不到时临时兜底
 
 # 2. 业务步骤区
 steps:
@@ -43,14 +51,8 @@ steps:
   # 2. 这是后续进入 byd 模块的第一跳；
   # 3. 点完后，预期应该切到弹窗、活动页或模块入口页。
   - name: "【操作】点击底部入口按钮"
-    action: "click"
-    # 说明：
-    # 1. 这里优先沿用项目里已经验证过的一组坐标；
-    # 2. 如果 Poco 识别不到游戏贴图按钮，就使用 fallback_pos 做坐标点击；
-    # 3. 坐标是百分比坐标，范围 0 到 1。
-    fallback_pos: [0.082, 0.383]
-    sleep_after: 1                    # 第 1 步点击后等待 1 秒，再截图，便于观察界面反馈
-    snapshot_after: true
+    action: "snapshot"
+    message: "待补 Poco selector：点击底部入口按钮"
 
   # 目的：
   # 1. 把进入入口后的界面状态单独留证；
@@ -65,27 +67,21 @@ steps:
   # 2. 这一步通常代表从模块首页进入更具体的业务子页；
   # 3. 点完后，预期应该看到新的业务内容，而不是原页面没有变化。
   - name: "【操作】进入原始模板里的第 1 个业务入口"
-    action: "click"
-    fallback_pos: [0.0755, 0.3818]
-    sleep_after: 1                    # 第 2 步点击后等待 1 秒，再截图，便于观察界面反馈
-    snapshot_after: true
+    action: "snapshot"
+    message: "待补 Poco selector：进入原始模板里的第 1 个业务入口"
 
   # 目的：
   # 1. 在上一步子页里继续进入第 2 层业务入口；
   # 2. 这是验证 byd 流程能否继续往深层走的重要一步；
   # 3. 点完后，预期出现更深一层页面、弹窗或奖励详情页。
   - name: "【操作】进入原始模板里的第 2 个业务入口"
-    action: "click"
-    fallback_pos: [0.237, 0.4971]
-    sleep_after: 1                    # 第 3 步点击后等待 1 秒，再截图，便于观察界面反馈
-    snapshot_after: true
+    action: "snapshot"
+    message: "待补 Poco selector：进入原始模板里的第 2 个业务入口"
 
   # 目的：
   # 1. 对当前弹层或子页面执行关闭动作；
   # 2. 这一步用于验证“能进，也能正常退”；
   # 3. 点完后，预期回到上一层 byd 页面或主入口页，而不是卡死在弹窗里。
   - name: "【操作】执行原始模板里的关闭动作"
-    action: "click"
-    fallback_pos: [0.9531, 0.9727]
-    sleep_after: 1                    # 第 4 步点击后等待 1 秒，再截图，便于观察界面反馈
-    snapshot_after: true
+    action: "snapshot"
+    message: "待补 Poco selector：执行原始模板里的关闭动作"
