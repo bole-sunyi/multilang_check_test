@@ -104,6 +104,62 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def env_int(name: str, default: int) -> int:
+    """读取整数型环境变量，格式错误时保留默认值。"""
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        print(f"环境变量 {name}={raw_value!r} 不是有效整数，已使用默认值 {default}")
+        return default
+
+
+class PocoHierarchyDumpError(RuntimeError):
+    """Poco 控件树读取失败时抛出的可读错误。"""
+
+
+def dump_poco_hierarchy(poco: Any) -> dict[str, Any]:
+    """
+    读取 Poco 原始控件树，并对模拟器偶发断开做短重试。
+
+    StdPoco 底层通过 socket 连接游戏内 Poco SDK。页面刚切换、游戏还在加载、
+    或模拟器短暂断连时，第一次读取可能会抛出 `Socket connection broken`。
+    """
+    attempts = max(1, env_int("POCO_DUMP_RETRIES", 2))
+    retry_delay = max(0.0, env_float("POCO_DUMP_RETRY_DELAY", 1.0))
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            hierarchy = poco.agent.hierarchy.dump()
+            if isinstance(hierarchy, dict):
+                return hierarchy
+            raise TypeError(f"Poco 返回了非字典控件树: {type(hierarchy).__name__}")
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts:
+                print(f"Poco 控件树读取失败，{retry_delay:g} 秒后重试 ({attempt}/{attempts})...")
+                if retry_delay > 0:
+                    sleep(retry_delay)
+
+    assert last_exc is not None
+    raise PocoHierarchyDumpError(_format_poco_dump_error(attempts, last_exc)) from last_exc
+
+
+def _format_poco_dump_error(attempts: int, exc: Exception) -> str:
+    reason = f"{type(exc).__name__}: {exc}"
+    return (
+        f"Poco 控件树读取失败（已尝试 {attempts} 次）。\n"
+        "常见原因：当前游戏包没有开启 Cocos Poco SDK、页面还在加载、"
+        "游戏进程刚重启，或模拟器 socket 被断开。\n"
+        "处理建议：先确认游戏停在目标页面并等待几秒后重试；如果只想查看 Android "
+        "系统控件，可临时运行 `POCO_DRIVER=android python dump_current_screen.py`。\n"
+        f"原始错误：{reason}"
+    )
+
+
 def dump_visible_nodes(
     poco: Any,
     output_path: Path,
@@ -119,7 +175,7 @@ def dump_visible_nodes(
         max_depth: 采集的深度。深度越大，抓到的细节越多（比如嵌套很深的按钮）
     """
     # 让 Poco 吐出原始的层级数据
-    root = poco.agent.hierarchy.dump()
+    root = dump_poco_hierarchy(poco)
     flattened: list[dict[str, Any]] = []
 
     def walk(node: dict[str, Any], depth: int, path: str) -> None:
@@ -199,25 +255,41 @@ def write_poco_steps_yaml(nodes_json_path: Path, nodes: list[dict[str, Any]]) ->
     yaml_path = nodes_json_path.with_name(f"{nodes_json_path.stem}_steps.yaml")
     header = (
         "# 由 Poco 节点树自动生成的可执行 YAML 片段。\n"
-        "# 用法：从下面挑选目标节点，复制到 config/*_test.yaml 的 steps 下即可执行。\n"
+        "# 用法：从下面挑选目标节点，连同前面的两格缩进一起复制到 config/*_test.yaml 的 steps 下即可执行。\n"
         "# 自动生成内容只使用 name + chain，不生成坐标兜底。\n"
         "# 每个步骤前面的注释用于人工识别节点，复制时可以一起复制，也可以只复制 - name 开始的 YAML。\n"
     )
     yaml_parts = [header, "steps:\n"]
     for record in records:
-        yaml_parts.extend(_build_node_identity_comments(record["node"]))
+        yaml_parts.extend(_indent_yaml_lines(_build_node_identity_comments(record["node"])))
         yaml_parts.append(
-            yaml.dump(
-                [record["step"]],
-                Dumper=PocoStepDumper,
-                allow_unicode=True,
-                sort_keys=False,
-                default_flow_style=False,
+            _indent_yaml_text(
+                yaml.dump(
+                    [record["step"]],
+                    Dumper=PocoStepDumper,
+                    allow_unicode=True,
+                    sort_keys=False,
+                    default_flow_style=False,
+                )
             )
         )
     yaml_text = "".join(yaml_parts)
     yaml_path.write_text(yaml_text, encoding="utf-8")
     return yaml_path
+
+
+def _indent_yaml_lines(lines: list[str], spaces: int = 2) -> list[str]:
+    """把自动生成的步骤注释缩进到 `steps:` 下面，方便直接复制。"""
+    prefix = " " * spaces
+    return [f"{prefix}{line}" if line.strip() else line for line in lines]
+
+
+def _indent_yaml_text(text: str, spaces: int = 2) -> str:
+    """把 PyYAML 生成的列表步骤缩进到 `steps:` 下面。"""
+    return "".join(
+        f"{' ' * spaces}{line}" if line.strip() else line
+        for line in text.splitlines(keepends=True)
+    )
 
 
 def build_poco_node_steps(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -328,30 +400,42 @@ def _build_selector_from_path(value: Any) -> dict[str, Any]:
     转换规则：
     1. 跳过 `root` 和 `<Node ...>` 这种没有稳定业务名的片段；
     2. 第一个有效名字作为 `selector.name`；
-    3. 后续有效名字按顺序变成 `chain: child`。
+    3. 后续有效名字默认按顺序变成 `chain: child`；
+    4. 如果两个有效名字之间跳过了 `<Layer>` / `<Node>` 等匿名层，则用 `offspring`。
     """
     path = _clean_locator_value(value)
     if not path:
         return {}
 
-    names: list[str] = []
+    path_parts: list[dict[str, Any]] = []
+    skipped_unstable_since_last_name = False
     for segment in path.split("/"):
         if ":" not in segment:
             continue
         _, raw_name = segment.split(":", 1)
         name = _clean_locator_value(raw_name)
-        if not name or name.startswith("<"):
+        if not name:
             continue
-        names.append(name)
+        if name.startswith("<"):
+            if path_parts:
+                skipped_unstable_since_last_name = True
+            continue
+        path_parts.append(
+            {
+                "name": name,
+                "method": "offspring" if skipped_unstable_since_last_name else "child",
+            }
+        )
+        skipped_unstable_since_last_name = False
 
-    if not names:
+    if not path_parts:
         return {}
 
-    selector: dict[str, Any] = {"name": names[0]}
-    if len(names) > 1:
+    selector: dict[str, Any] = {"name": path_parts[0]["name"]}
+    if len(path_parts) > 1:
         selector["chain"] = [
-            {"method": "child", "name": name}
-            for name in names[1:]
+            {"method": str(part["method"]), "name": str(part["name"])}
+            for part in path_parts[1:]
         ]
     return selector
 

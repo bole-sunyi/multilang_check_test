@@ -195,29 +195,29 @@ nodes_steps.yaml        # 最重要，可直接复制到 config/*.yaml 的步骤
 自动生成的步骤会带一段注释。注释用于人工识别节点，真正执行的是 `- name:` 开始的 YAML：
 
 ```yaml
-# ------------------------------------------------------------
-# 节点识别: a_set_node
-# 显示文本: COLLECTIONS
-# Poco中心点: [0.4049, 0.9543]
-# Poco大小: [0.1277, 0.0444]
-# Poco路径: root/1:<Node | Tag = -1/1:Lobby_Footer_Node/0:footer/2:middle_node/3:a_set_node
-# 复制建议: 优先复制下面从 '- name:' 开始的整个步骤到 config/*.yaml 的 steps 下。
-- name: 【操作】点击a_set_node
-  action: click
-  selector:
-    name: Lobby_Footer_Node
-    chain:
-    - method: child
-      name: footer
-    - method: child
-      name: middle_node
-    - method: child
-      name: a_set_node
-  sleep_after: 1
-  snapshot_after: true
+  # ------------------------------------------------------------
+  # 节点识别: a_set_node
+  # 显示文本: COLLECTIONS
+  # Poco中心点: [0.4049, 0.9543]
+  # Poco大小: [0.1277, 0.0444]
+  # Poco路径: root/1:<Node | Tag = -1/1:Lobby_Footer_Node/0:footer/2:middle_node/3:a_set_node
+  # 复制建议: 优先复制下面从 '- name:' 开始的整个步骤到 config/*.yaml 的 steps 下。
+  - name: 【操作】点击a_set_node
+    action: click
+    selector:
+      name: Lobby_Footer_Node
+      chain:
+        - method: child
+          name: footer
+        - method: child
+          name: middle_node
+        - method: child
+          name: a_set_node
+    sleep_after: 1
+    snapshot_after: true
 ```
 
-这类结构可以直接复制到模块 YAML 的 `steps:` 下面。
+这类结构已经带好缩进，可以直接复制到模块 YAML 的 `steps:` 下面。
 
 怎么看这个节点是不是你要的：
 
@@ -235,20 +235,20 @@ nodes_steps.yaml        # 最重要，可直接复制到 config/*.yaml 的步骤
 config/atw_test.yaml
 ```
 
-把 `nodes_steps.yaml` 里选好的步骤复制到 `steps:` 下面。
+把 `nodes_steps.yaml` 里选好的步骤复制到 `steps:` 下面。生成内容已经带两格缩进，复制时不要删掉 `- name:` 前面的空格。
 
 复制后第一件事：手动改 `name`。
 
 `nodes_steps.yaml` 自动生成的 `name` 可能是 Poco 内部节点名，例如：
 
 ```yaml
-- name: 【操作】点击timer_label
+  - name: 【操作】点击timer_label
 ```
 
 这种名字能执行，但不方便最终核对。建议改成肉眼能看懂的页面文案或业务动作，例如：
 
 ```yaml
-- name: 【操作】点击83D 15H
+  - name: 【操作】点击83D 15H
 ```
 
 为什么一定要改清楚：

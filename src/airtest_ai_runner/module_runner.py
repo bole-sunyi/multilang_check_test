@@ -32,7 +32,7 @@ from .dingtalk_export import export_module_screenshots_to_dingtalk
 from .excel_export import export_module_screenshots_to_excel
 from .log_utils import sanitize_airtest_log
 from .paths import get_module_log_dir, get_run_artifacts_dir, prompt_cleanup_artifacts_root
-from .poco_utils import build_poco, dump_visible_nodes, execute_steps, load_steps
+from .poco_utils import build_poco, dump_poco_hierarchy, dump_visible_nodes, execute_steps, load_steps
 from .single_run_report import write_single_case_reports
 
 DEFAULT_ADB_HOST = "127.0.0.1"
@@ -229,13 +229,7 @@ def _is_dingtalk_export_enabled(config: object) -> bool:
 
 def _verify_poco_connection(poco: Any) -> None:
     """运行前快速确认游戏 Poco 树可读取，失败时给出明确排查方向。"""
-    try:
-        hierarchy = poco.agent.hierarchy.dump()
-    except Exception as exc:
-        raise RuntimeError(
-            "Poco 控件树读取失败。请确认当前游戏包是 debug/test 包，"
-            "并且已启用 Cocos2d-x Lua Poco SDK 服务（默认监听 15004）。"
-        ) from exc
+    hierarchy = dump_poco_hierarchy(poco)
 
     root_name = ""
     if isinstance(hierarchy, dict):

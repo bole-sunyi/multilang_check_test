@@ -27,7 +27,7 @@ if str(SRC_DIR) not in sys.path:
 
 from airtest.core.api import auto_setup, device, snapshot
 from airtest_ai_runner.device_utils import build_android_device_uri, select_android_device_serial
-from airtest_ai_runner.poco_utils import build_poco, dump_visible_nodes
+from airtest_ai_runner.poco_utils import PocoHierarchyDumpError, build_poco, dump_visible_nodes
 from airtest_ai_runner.paths import get_current_dump_dir
 from airtest_ai_runner.screenshot_utils import normalize_image_file_for_landscape
 
@@ -62,25 +62,37 @@ def dump_now():
     output_dir = get_current_dump_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. 采集节点树。
+    # 4. 先截一张图，方便对照。
+    # Poco socket 偶发断开时，至少能保留当前页面截图用于排查。
+    img_path = output_dir / "screen.png"
+    _ = snapshot(filename=str(img_path), msg="手动即时采集")
+    _ = normalize_image_file_for_landscape(img_path)
+
+    # 5. 采集节点树。
     # dump_visible_nodes 会一次生成 3 类文件：
     # - nodes.json：完整节点清单，适合搜索和排查；
     # - nodes字段说明.md：解释 JSON 每个字段什么意思；
     # - nodes_steps.yaml：把节点路径转换成可复制执行的 name + chain 步骤。
     print("正在抓取当前页面控件树 (Poco Tree)...")
     json_path = output_dir / "nodes.json"
-    _ = dump_visible_nodes(poco, json_path)
+    try:
+        _ = dump_visible_nodes(poco, json_path)
+    except PocoHierarchyDumpError as exc:
+        error_path = output_dir / "poco_dump_error.txt"
+        error_path.write_text(str(exc), encoding="utf-8")
+        print("\n" + "="*50)
+        print("【Poco 节点采集失败】")
+        print(f"当前截图已保存: {img_path.absolute()}")
+        print(f"错误说明已保存: {error_path.absolute()}")
+        print(str(exc))
+        print("="*50)
+        raise SystemExit(1) from exc
     guide_path = json_path.with_name(f"{json_path.stem}字段说明.md")
     yaml_path = json_path.with_name(f"{json_path.stem}_steps.yaml")
 
-    # 5. 同时截一张图，方便对照。
     # 建议新手同时打开 screen.png 和 nodes_steps.yaml：
     # - screen.png 用来确认当前页面是不是你想采集的页面；
     # - nodes_steps.yaml 用来挑选要复制的 Poco selector。
-    img_path = output_dir / "screen.png"
-    _ = snapshot(filename=str(img_path), msg="手动即时采集")
-    _ = normalize_image_file_for_landscape(img_path)
-
     print("\n" + "="*50)
     print("【采集成功！】")
     print(f"1. 节点清单 (JSON): {json_path.absolute()}")
